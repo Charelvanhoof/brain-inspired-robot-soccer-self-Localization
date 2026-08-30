@@ -17,6 +17,14 @@
 !/Robot_Soccer_Self_Localization_with_Active_Inference/
 !/Robot_Soccer_Self_Localization_with_Active_Inference/**
 
+# Datasets used for the published paper results
+!/reports/
+/reports/*
+!/reports/paper_visibility_stress_dataset_FOR_PAPER_20260530_141448.csv
+!/reports/paper_visibility_stress_dataset_FOR_PAPER_20260530_141448.json
+!/reports/paper_landmark_ambiguity_dataset_FOR_PAPER_20260530_151914.csv
+!/reports/paper_landmark_ambiguity_dataset_FOR_PAPER_20260530_151914.json
+
 # Ignore generated LaTeX build files inside the included paper directory.
 Robot_Soccer_Self_Localization_with_Active_Inference/*.aux
 Robot_Soccer_Self_Localization_with_Active_Inference/*.bbl

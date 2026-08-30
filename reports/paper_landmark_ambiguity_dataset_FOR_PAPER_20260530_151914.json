@@ -1,0 +1,77 @@
+{
+  "csv_path": "C:\\Users\\chare\\OneDrive\\Robotics\\Robocup\\brain inspired localisation\\reports\\paper_landmark_ambiguity_dataset_FOR_PAPER_20260530_151914.csv",
+  "steps": 288000,
+  "duration_s": 7200.0,
+  "algorithm_name": "motion+landmark",
+  "demo_path_name": "Random targets",
+  "actual_start": {
+    "x_cm": 639.9279736539488,
+    "y_cm": -368.48945174707586,
+    "theta_rad": -0.9553167914349725
+  },
+  "belief_start": {
+    "x_cm": 639.9279736539488,
+    "y_cm": -368.48945174707586,
+    "theta_rad": -0.9553167914349725
+  },
+  "actual_end": {
+    "x_cm": -667.1480132637203,
+    "y_cm": 171.5823782832536,
+    "theta_rad": -0.1811969178401447
+  },
+  "belief_end": {
+    "x_cm": -666.4777161891105,
+    "y_cm": 183.71594073399834,
+    "theta_rad": -0.18889860665234215
+  },
+  "settings": {
+    "noise_enabled": true,
+    "noise_x_cm": 10.0,
+    "noise_y_cm": 10.0,
+    "noise_angle_rad": 0.17453292519943295,
+    "motion_noise_ratio": 0.1,
+    "odometry_bias_enabled": false,
+    "odometry_bias_x_cm_s": 18.0,
+    "odometry_bias_y_cm_s": 8.0,
+    "odometry_bias_theta_rad_s": 0.026179938779914945,
+    "motion_slip_enabled": false,
+    "motion_slip_event_probability": 0.03,
+    "motion_slip_event_interval_s": 1.0,
+    "motion_slip_mean_s": 2.0,
+    "motion_slip_std_s": 0.5,
+    "motion_slip_velocity_factor": 1.5,
+    "motion_slip_rotation_lever_cm": 45.0,
+    "landmark_dropout_enabled": true,
+    "landmark_dropout_probability": 0.1,
+    "landmark_obstruction_enabled": true,
+    "landmark_obstruction_event_probability": 0.03,
+    "landmark_obstruction_event_interval_s": 1.0,
+    "landmark_obstruction_mean_s": 2.0,
+    "landmark_obstruction_std_s": 0.5,
+    "viewing_angle_enabled": true,
+    "viewing_angle_deg": 110.0,
+    "precision_cam": 1.0,
+    "precision_odo": 1.0,
+    "precision_imu": 1.0,
+    "precision_label": "fused cam=1.0000 odo=1.0000 imu=1.0000",
+    "dt": 0.025,
+    "learning_rate": {
+      "xy": 1.6,
+      "angle": 1.7626e-05
+    },
+    "lr_cam_xy": 1.6,
+    "lr_cam_angle": 1.7626e-05,
+    "lr_motion_vel_xy": 4.0,
+    "lr_motion_vel_theta": 4.0,
+    "lr_motion_acc_xy": 40.0,
+    "lr_motion_acc_theta": 40.0,
+    "data_association": "Gated nearest",
+    "landmark_association_gate_cm": 1000.0,
+    "landmark_scenario_profile": "9",
+    "landmark_scenario_count": 9,
+    "profile_name": "40Hz",
+    "demo_path_name": "Random targets",
+    "export_steps": 288000,
+    "export_duration_s": 7200.0
+  }
+}
