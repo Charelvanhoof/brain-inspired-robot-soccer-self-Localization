@@ -66,6 +66,7 @@ LANDMARK_ASSOCIATION_GATE_CM = 1000.0
 GENERALIZED_COORDINATE_ORDER = 2
 DISTANCE_PRECISION_REF_CM = 600.0
 DISTANCE_PRECISION_MIN_FACTOR = 0.15
+PRECISION_DISTANCE_MODIFIER_ENABLED = True
 REALTIME_UI_FPS = 60
 MAX_REALTIME_SIM_STEPS_PER_FRAME = 120
 DEMO_TRACE_MAX_POINTS = 1200
@@ -86,6 +87,7 @@ MOTION_LR_ACC_THETA = 50.0
 MASTERDATA_SETTING_PROFILES = [
     {
         "name": "40Hz",
+        "precision_distance_modifier_enabled": True,
         "dt": 0.025,
         "pi_cam": 1.0,
         "pi_odo": 1.0,
@@ -98,13 +100,42 @@ MASTERDATA_SETTING_PROFILES = [
         "motion_lr_acc_theta": 40.0,
     },
     {
+        "name": "40Hz",
+        "precision_distance_modifier_enabled": False,
+        "dt": 0.025,
+        "pi_cam": 1.0,
+        "pi_odo": 1.0,
+        "pi_imu": 1.0,
+        "lr_xy": 1.6,
+        "lr_angle": 7.000e-07,
+        "motion_lr_vel_xy": 4.0,
+        "motion_lr_vel_theta": 4.0,
+        "motion_lr_acc_xy": 40.0,
+        "motion_lr_acc_theta": 40.0,
+    },
+    {
         "name": "200Hz",
+        "precision_distance_modifier_enabled": True,
         "dt": 0.005,
         "pi_cam": 1.0,
         "pi_odo": 1.0,
         "pi_imu": 1.0,
         "lr_xy": 10.0,
         "lr_angle": 8.813e-05,
+        "motion_lr_vel_xy": 6.0,
+        "motion_lr_vel_theta": 5.0,
+        "motion_lr_acc_xy": 4.0,
+        "motion_lr_acc_theta": 3.0,
+    },
+    {
+        "name": "200Hz",
+        "precision_distance_modifier_enabled": False,
+        "dt": 0.005,
+        "pi_cam": 1.0,
+        "pi_odo": 1.0,
+        "pi_imu": 1.0,
+        "lr_xy": 10.0,
+        "lr_angle": 7.000e-07,
         "motion_lr_vel_xy": 6.0,
         "motion_lr_vel_theta": 5.0,
         "motion_lr_acc_xy": 4.0,
@@ -338,6 +369,8 @@ def set_motion_lr_acc_theta(value: float):
 
 
 def apply_masterdata_setting_profile(profile):
+    global PRECISION_DISTANCE_MODIFIER_ENABLED
+    PRECISION_DISTANCE_MODIFIER_ENABLED = bool(profile["precision_distance_modifier_enabled"])
     set_dt(profile["dt"])
     set_precision(profile["pi_cam"])
     set_precision_odo(profile["pi_odo"])
@@ -584,12 +617,15 @@ def precision_distance_modifier(pred_obs):
     #   reduces precision for farther landmarks based on predicted range
     #   range_cm = sqrt(x_rcs_cm^2 + y_rcs_cm^2)
     #   modifier = max(min_factor, 1 / (1 + (range_cm / ref_cm)^2))
+    #   if disabled, landmark precision returns 1.0 (no modifier applied)
+    if not PRECISION_DISTANCE_MODIFIER_ENABLED:
+        return 1.0
+
     range_cm = math.hypot(pred_obs["x_rcs_cm"], pred_obs["y_rcs_cm"])
     range_ratio = range_cm / DISTANCE_PRECISION_REF_CM if DISTANCE_PRECISION_REF_CM > 0.0 else 0.0
     modifier = 1.0 / (1.0 + range_ratio * range_ratio)
     modifier = max(DISTANCE_PRECISION_MIN_FACTOR, modifier)
     return modifier
-    #return 1.0   # ablation study: disable distance-based precision reduction
 
 def landmark_fcs_2_rcs(robot_fcs_gc, x_cm, y_cm):
     # Input:

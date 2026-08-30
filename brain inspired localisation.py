@@ -97,6 +97,7 @@ LANDMARK_ASSOCIATION_GATE_CM = 1000.0
 GENERALIZED_COORDINATE_ORDER = 2
 DISTANCE_PRECISION_REF_CM = 600.0
 DISTANCE_PRECISION_MIN_FACTOR = 0.15
+PRECISION_DISTANCE_MODIFIER_ENABLED = True
 REALTIME_UI_FPS = 60
 MAX_REALTIME_SIM_STEPS_PER_FRAME = 120
 DEMO_TRACE_MAX_POINTS = 1200
@@ -117,6 +118,7 @@ MOTION_LR_ACC_THETA = 50.0
 MASTERDATA_SETTING_PROFILES = [
     {
         "name": "40Hz",
+        "precision_distance_modifier_enabled": True,
         "dt": 0.025,
         "pi_cam": 1.0,
         "pi_odo": 1.0,
@@ -129,7 +131,22 @@ MASTERDATA_SETTING_PROFILES = [
         "motion_lr_acc_theta": 40.0,
     },
     {
+        "name": "40Hz",
+        "precision_distance_modifier_enabled": False,
+        "dt": 0.025,
+        "pi_cam": 1.0,
+        "pi_odo": 1.0,
+        "pi_imu": 1.0,
+        "lr_xy": 1.6,
+        "lr_angle": 7.000e-07,
+        "motion_lr_vel_xy": 4.0,
+        "motion_lr_vel_theta": 4.0,
+        "motion_lr_acc_xy": 40.0,
+        "motion_lr_acc_theta": 40.0,
+    },
+    {
         "name": "200Hz",
+        "precision_distance_modifier_enabled": True,
         "dt": 0.005,
         "pi_cam": 1.0,
         "pi_odo": 1.0,
@@ -141,7 +158,22 @@ MASTERDATA_SETTING_PROFILES = [
         "motion_lr_acc_xy": 4.0,
         "motion_lr_acc_theta": 3.0,
     },
+    {
+        "name": "200Hz",
+        "precision_distance_modifier_enabled": False,
+        "dt": 0.005,
+        "pi_cam": 1.0,
+        "pi_odo": 1.0,
+        "pi_imu": 1.0,
+        "lr_xy": 10.0,
+        "lr_angle": 7.000e-07,
+        "motion_lr_vel_xy": 6.0,
+        "motion_lr_vel_theta": 5.0,
+        "motion_lr_acc_xy": 4.0,
+        "motion_lr_acc_theta": 3.0,
+    },
 ]
+MASTERDATA_FREQUENCY_NAMES = ["40Hz", "200Hz"]
 MOTION_NOISE_RATIO = 0.10
 # NOISE SETTINGS (shared Gaussian noise magnitude)
 NOISE_STD_X_CM = 10.0
@@ -375,6 +407,8 @@ def set_motion_lr_acc_theta(value: float):
 
 
 def apply_masterdata_setting_profile(profile):
+    global PRECISION_DISTANCE_MODIFIER_ENABLED
+    PRECISION_DISTANCE_MODIFIER_ENABLED = bool(profile["precision_distance_modifier_enabled"])
     set_dt(profile["dt"])
     set_precision(profile["pi_cam"])
     set_precision_odo(profile["pi_odo"])
@@ -621,12 +655,15 @@ def precision_distance_modifier(pred_obs):
     #   reduces precision for farther landmarks based on predicted range
     #   range_cm = sqrt(x_rcs_cm^2 + y_rcs_cm^2)
     #   modifier = max(min_factor, 1 / (1 + (range_cm / ref_cm)^2))
+    #   if disabled, landmark precision returns 1.0 (no modifier applied)
+    if not PRECISION_DISTANCE_MODIFIER_ENABLED:
+        return 1.0
+
     range_cm = math.hypot(pred_obs["x_rcs_cm"], pred_obs["y_rcs_cm"])
     range_ratio = range_cm / DISTANCE_PRECISION_REF_CM if DISTANCE_PRECISION_REF_CM > 0.0 else 0.0
     modifier = 1.0 / (1.0 + range_ratio * range_ratio)
     modifier = max(DISTANCE_PRECISION_MIN_FACTOR, modifier)
     return modifier
-    #return 1.0   # ablation study: disable distance-based precision reduction
 
 
 
@@ -1608,6 +1645,7 @@ def experiment_settings(algorithm_name):
         "precision_cam": PI_CAM,
         "precision_odo": PI_ODO,
         "precision_imu": PI_IMU,
+        "precision_distance_modifier_enabled": PRECISION_DISTANCE_MODIFIER_ENABLED,
         "precision_label": precision_label_for_algorithm(algorithm_name, PI_CAM),
         "dt": DT,
         "learning_rate": gain_for_algorithm(algorithm_name),
@@ -1683,6 +1721,7 @@ def compact_tracking_export_row(record, time_s):
         "visible_landmark_count": record.get("visible_landmark_count", len(visible_landmark_ids)),
         "visible_landmark_ids": ";".join(visible_landmark_ids),
         "obstruction_active_count": record.get("obstruction_active_count", 0),
+        "precision_distance_modifier_enabled": record["settings"]["precision_distance_modifier_enabled"],
         "free_energy": record["free_energy"],
     }
 
@@ -1739,6 +1778,11 @@ def precision_report_row(settings):
         f"odo={format_display_value(report_value(settings, 'precision_odo', 'pi_odo', PI_ODO))}   "
         f"imu={format_display_value(report_value(settings, 'precision_imu', 'pi_imu', PI_IMU))}"
     )
+
+
+def precision_distance_modifier_report_row(settings):
+    enabled = settings.get("precision_distance_modifier_enabled", PRECISION_DISTANCE_MODIFIER_ENABLED)
+    return f"Distance precision modifier: {'YES' if enabled else 'NO'}"
 
 
 def learning_rate_report_row(settings):
@@ -1891,6 +1935,7 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
     hyper_text = (
         f"Profile={profile_text}   Path={path_text}   DT={settings['dt']:.4f}\n"
         f"{precision_report_row(settings)}\n"
+        f"{precision_distance_modifier_report_row(settings)}\n"
         f"{learning_rate_report_row(settings)}\n"
         f"{association_text}\n"
         f"{landmark_profile_text}\n"
@@ -2212,12 +2257,20 @@ PROFILE_REGRESSION_START_POSES = [
 ]
 
 
-def masterdata_setting_profile_by_name(profile_name):
+def masterdata_setting_profile_by_name(profile_name, precision_distance_modifier_enabled=None):
+    if precision_distance_modifier_enabled is None:
+        precision_distance_modifier_enabled = PRECISION_DISTANCE_MODIFIER_ENABLED
     for profile in MASTERDATA_SETTING_PROFILES:
-        if profile["name"] == profile_name:
+        if (
+            profile["name"] == profile_name
+            and profile["precision_distance_modifier_enabled"] == bool(precision_distance_modifier_enabled)
+        ):
             return profile
-    valid_names = ", ".join(profile["name"] for profile in MASTERDATA_SETTING_PROFILES)
-    raise ValueError(f"Unknown masterdata profile '{profile_name}'. Use one of: {valid_names}")
+    valid_names = ", ".join(MASTERDATA_FREQUENCY_NAMES)
+    raise ValueError(
+        f"Unknown masterdata profile combination '{profile_name}', "
+        f"distance modifier={bool(precision_distance_modifier_enabled)}. Use one of: {valid_names}"
+    )
 
 
 def make_robots_from_start_pair(actual_start, belief_start):
@@ -2281,6 +2334,7 @@ def run_masterdata_profile_regression_test(
         "motion_lr_vel_theta": MOTION_LR_VEL_THETA,
         "motion_lr_acc_xy": MOTION_LR_ACC_XY,
         "motion_lr_acc_theta": MOTION_LR_ACC_THETA,
+        "precision_distance_modifier_enabled": PRECISION_DISTANCE_MODIFIER_ENABLED,
         "noise_enabled": NOISE_ENABLED,
         "odometry_bias_enabled": ODOMETRY_BIAS_ENABLED,
         "motion_slip_enabled": MOTION_SLIP_ENABLED,
@@ -2354,6 +2408,7 @@ def run_masterdata_profile_regression_test(
         "candidate_profile_settings": dict(candidate_profile),
         "duration_s": duration_s,
         "algorithm_name": algorithm_name,
+        "precision_distance_modifier_enabled": PRECISION_DISTANCE_MODIFIER_ENABLED,
         "tolerance": {
             "x_cm": tol_x_cm,
             "y_cm": tol_y_cm,
@@ -2480,6 +2535,7 @@ def plot_masterdata_profile_regression_report(report):
                 f"{report['reference_profile']} {learning_rate_report_row(reference_profile_settings)}\n"
                 f"{report['candidate_profile']} {precision_report_row(candidate_profile_settings)}\n"
                 f"{report['candidate_profile']} {learning_rate_report_row(candidate_profile_settings)}\n"
+                f"Distance precision modifier: {'YES' if report.get('precision_distance_modifier_enabled', True) else 'NO'}\n"
                 f"Tolerance: |dx|<={tol['x_cm']:.1f} cm   |dy|<={tol['y_cm']:.1f} cm   "
                 f"|dtheta|<={math.degrees(tol['theta_rad']):.1f} deg"
             )
@@ -2819,6 +2875,7 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                     f"{viewing_text}   |   {association_text}   |   {landmark_profile_text}\n"
                     f"DT={settings['dt']:.4f}\n"
                     f"{precision_report_row(settings)}\n"
+                    f"{precision_distance_modifier_report_row(settings)}\n"
                     f"{learning_rate_report_row(settings)}\n"
                     f"Convergence condition: |dx|<={CONV_TOL_X_CM:.1f} cm   |dy|<={CONV_TOL_Y_CM:.1f} cm   |dtheta|<={CONV_TOL_ANGLE_RAD:.4f} rad   sequential hits>={CONV_REQUIRED_SEQUENTIAL_HITS}"
                 )
@@ -3862,6 +3919,7 @@ def export_demo_tracking_dataset(
         "visible_landmark_count",
         "visible_landmark_ids",
         "obstruction_active_count",
+        "precision_distance_modifier_enabled",
         "free_energy",
     ]
 
@@ -3918,9 +3976,13 @@ def run_headless_paper_dataset_export(
     start_mode="fixed_offset",
     filename_prefix="paper_visibility_stress_dataset_FOR_PAPER",
     association_name=None,
+    precision_distance_modifier_enabled=True,
 ):
-    global ACTIVE_DATA_ASSOCIATION_NAME
-    apply_masterdata_setting_profile(masterdata_setting_profile_by_name(profile_name))
+    global ACTIVE_DATA_ASSOCIATION_NAME, PRECISION_DISTANCE_MODIFIER_ENABLED
+    PRECISION_DISTANCE_MODIFIER_ENABLED = bool(precision_distance_modifier_enabled)
+    apply_masterdata_setting_profile(
+        masterdata_setting_profile_by_name(profile_name, PRECISION_DISTANCE_MODIFIER_ENABLED)
+    )
     if association_name is None:
         association_name = DATA_ASSOCIATION_UNIQUE_ID_NAME if apply_paper_stress else ACTIVE_DATA_ASSOCIATION_NAME
     if apply_paper_stress:
@@ -4255,7 +4317,7 @@ def draw_tooltip(screen, text, mouse_pos, font):
 
 # --- Main UI entrypoint ---
 def main():
-    global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, ACTIVE_DATA_ASSOCIATION_NAME, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_DATA_ASSOCIATION_NAME, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
     if getattr(pygame, "_is_stub", False) or getattr(plt, "_is_stub", False):
         raise ModuleNotFoundError("Interactive mode requires both pygame and matplotlib to be installed")
     pygame.init()
@@ -4311,7 +4373,12 @@ def main():
     data_association_names = DATA_ASSOCIATION_ALGORITHM_NAMES
     selected_data_association_idx = data_association_names.index(ACTIVE_DATA_ASSOCIATION_NAME)
     selected_settings_profile_idx = 0
-    apply_masterdata_setting_profile(MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx])
+    apply_masterdata_setting_profile(
+        masterdata_setting_profile_by_name(
+            MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+            PRECISION_DISTANCE_MODIFIER_ENABLED,
+        )
+    )
     landmark_scenario_profile_names = [profile["name"] for profile in LANDMARK_SCENARIO_PROFILES]
     selected_landmark_scenario_profile_idx = landmark_scenario_profile_names.index(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME)
     last_history = []
@@ -4499,8 +4566,8 @@ def main():
     row_y += btn_h + section_gap
     paper_reset_gap = 6
     paper_reset_btn_w = (panel_inner_w - paper_reset_gap) // 2
-    paper_data_btn = pygame.Rect(panel_left, row_y, paper_reset_btn_w, btn_h)
-    reset_belief_btn = pygame.Rect(paper_data_btn.right + paper_reset_gap, row_y, panel_inner_w - paper_reset_btn_w - paper_reset_gap, btn_h)
+    precision_distance_toggle_btn = pygame.Rect(panel_left, row_y, paper_reset_btn_w, btn_h)
+    reset_belief_btn = pygame.Rect(precision_distance_toggle_btn.right + paper_reset_gap, row_y, panel_inner_w - paper_reset_btn_w - paper_reset_gap, btn_h)
     row_y += btn_h + section_gap
     demo_btn_gap = 8
     demo_btn_w = (panel_inner_w - demo_btn_gap) // 2
@@ -4538,11 +4605,12 @@ def main():
     row_y += btn_h + row_gap
     convdynamic_btn = pygame.Rect(panel_left, row_y, conv_btn_w, btn_h)
     convdynamic_near_btn = pygame.Rect(convdynamic_btn.right + conv_btn_gap, row_y, conv_btn_w, btn_h)
+    paper_data_btn = pygame.Rect(convdynamic_near_btn.right + conv_btn_gap, row_y, panel_left + panel_inner_w - convdynamic_near_btn.right - conv_btn_gap, btn_h)
     row_y += btn_h + row_gap
     info_top = row_y + 8
 
-    settings_w = legend_w
-    settings_x = world_w - legend_w - 14
+    settings_w = 180
+    settings_x = world_w - settings_w - 14
     settings_y = 14 + legend_h + 10
     settings_profile_btn = pygame.Rect(settings_x, settings_y, settings_w, btn_h)
     landmark_scenario_profile_btn = pygame.Rect(settings_x, settings_y + btn_h + row_gap, settings_w, btn_h)
@@ -4610,7 +4678,12 @@ def main():
         (
             "paper_visibility_dataset",
             paper_data_btn,
-            "Run 288000 demo steps headlessly and export compact visibility-stress CSV/JSON metadata",
+            "Run 2 hours of demo steps headlessly and export compact visibility-stress CSV/JSON metadata",
+        ),
+        (
+            "precision_distance_modifier",
+            precision_distance_toggle_btn,
+            lambda: f"Distance-based landmark precision modifier is {'ON' if PRECISION_DISTANCE_MODIFIER_ENABLED else 'OFF'}",
         ),
         (
             "reset_belief",
@@ -4630,7 +4703,7 @@ def main():
         (
             "settings_profile",
             settings_profile_btn,
-            lambda: f"Masterdata profile: {MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]['name']}. Click to apply next profile",
+            lambda: f"Masterdata profile: {MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]}. Click to apply next profile",
         ),
         (
             "landmark_scenario_profile",
@@ -4773,7 +4846,7 @@ def main():
     def run_demo_step_experiment(algorithm_name, max_steps, callback_interval=20):
         history = []
         settings = experiment_settings(algorithm_name)
-        settings["profile_name"] = MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]["name"]
+        settings["profile_name"] = MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]
         settings["demo_path_name"] = demo_state["paths"][demo_state["selected_idx"]]["name"]
         advance_demo = True
 
@@ -5000,7 +5073,7 @@ def main():
         draw_button(
             screen,
             settings_profile_btn,
-            fit_button_label(f"PROFILE {MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]['name']}", font_b, settings_profile_btn.w - 16),
+            fit_button_label(f"PROFILE {MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]}", font_b, settings_profile_btn.w - 16),
             font_b,
             (85, 75, 135),
             (255, 255, 255),
@@ -5069,7 +5142,7 @@ def main():
         draw_toggle_button(screen, obstruction_btn, "OBSTR", LANDMARK_OBSTRUCTION_ENABLED, font_b)
         draw_toggle_button(screen, odometry_bias_btn, "BIAS", ODOMETRY_BIAS_ENABLED, font_b)
         draw_button(screen, plot_btn, "PLOT LAST EXPERIMENT", font_b, (110, 80, 30), (255, 255, 255))
-        draw_button(screen, paper_data_btn, "PAPER 288K", font_b, (105, 45, 150), (255, 255, 255))
+        draw_toggle_button(screen, precision_distance_toggle_btn, "DIST PREC", PRECISION_DISTANCE_MODIFIER_ENABLED, font_b)
         draw_button(screen, reset_belief_btn, "RESET", font_b, (120, 65, 45), (255, 255, 255))
         draw_input_box(screen, converge_runs_input_rect, input_fields["converge_runs"]["text"], font_ui, input_fields["converge_runs"]["active"], input_fields["converge_runs"]["suffix"])
         draw_button(screen, convtest_btn, "S-CONV", font_b, (90, 60, 120), (255, 255, 255))
@@ -5077,6 +5150,7 @@ def main():
         draw_button(screen, convcorner_btn, "S-CORN", font_b, (90, 60, 120), (255, 255, 255))
         draw_button(screen, convdynamic_btn, "D-CONV", font_b, (90, 60, 120), (255, 255, 255))
         draw_button(screen, convdynamic_near_btn, "D-NEAR", font_b, (90, 60, 120), (255, 255, 255))
+        draw_button(screen, paper_data_btn, "PAPER 2HRS", font_b, (105, 45, 150), (255, 255, 255))
 
         lines = []
         lines.append("Rotate robot: hold Q / E")
@@ -5252,9 +5326,12 @@ def main():
                     if settings_profile_btn.collidepoint(mx, my):
                         selected_settings_profile_idx = (
                             selected_settings_profile_idx + 1
-                        ) % len(MASTERDATA_SETTING_PROFILES)
+                        ) % len(MASTERDATA_FREQUENCY_NAMES)
                         apply_masterdata_setting_profile(
-                            MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]
+                            masterdata_setting_profile_by_name(
+                                MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                                PRECISION_DISTANCE_MODIFIER_ENABLED,
+                            )
                         )
                         deactivate_all_inputs(reset=True)
                         continue
@@ -5369,6 +5446,16 @@ def main():
                         LANDMARK_OBSTRUCTION_ENABLED = not LANDMARK_OBSTRUCTION_ENABLED
                         reset_landmark_obstruction_state()
                         continue
+                    if precision_distance_toggle_btn.collidepoint(mx, my):
+                        PRECISION_DISTANCE_MODIFIER_ENABLED = not PRECISION_DISTANCE_MODIFIER_ENABLED
+                        apply_masterdata_setting_profile(
+                            masterdata_setting_profile_by_name(
+                                MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                                PRECISION_DISTANCE_MODIFIER_ENABLED,
+                            )
+                        )
+                        deactivate_all_inputs(reset=True)
+                        continue
                     if plot_btn.collidepoint(mx, my):
                         plot_experiment(
                             last_history,
@@ -5383,7 +5470,7 @@ def main():
                         continue
                     if paper_data_btn.collidepoint(mx, my):
                         paper_algorithm_name = algorithm_names[selected_algorithm_idx]
-                        paper_profile_name = MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]["name"]
+                        paper_profile_name = MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]
                         paper_path_name = demo_state["paths"][demo_state["selected_idx"]]["name"]
                         converge_test_status = f"Paper data {paper_path_name}: starting"
                         safe_draw()
@@ -5455,7 +5542,7 @@ def main():
                             start_cases=start_cases,
                             look_target_x_cm=ball["x_cm"],
                             look_target_y_cm=ball["y_cm"],
-                            profile_name=MASTERDATA_SETTING_PROFILES[selected_settings_profile_idx]["name"],
+                            profile_name=MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
                         )
                         converge_test_status = None
                         last_history = converge_test_report["last_history"]
@@ -5634,6 +5721,12 @@ def main_cli(argv=None):
         help="Masterdata profile name for headless export, e.g. 40Hz or 200Hz.",
     )
     parser.add_argument(
+        "--paper-data-distance-precision-modifier",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable distance-based landmark precision for headless export (default: enabled).",
+    )
+    parser.add_argument(
         "--paper-data-path",
         default="Circle",
         help="Demo path name for headless export, e.g. Circle, Accel slalom, or Random targets.",
@@ -5672,6 +5765,7 @@ def main_cli(argv=None):
             start_mode=args.paper_data_start,
             filename_prefix=args.paper_data_filename_prefix,
             association_name=args.paper_data_association,
+            precision_distance_modifier_enabled=args.paper_data_distance_precision_modifier,
         )
         print(f"CSV: {result['csv_path']}")
         print(f"JSON: {result['json_path']}")
