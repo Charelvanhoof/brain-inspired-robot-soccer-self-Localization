@@ -1819,8 +1819,8 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
 
     def observed_motion_fcs(record):
         motion_obs = record.get("motion_obs")
-        actual_gc = record.get("actual_gc")
-        if motion_obs is None or actual_gc is None:
+        belief_gc = record.get("belief_gc")
+        if motion_obs is None or belief_gc is None:
             return {
                 "x_vel": 0.0,
                 "y_vel": 0.0,
@@ -1830,13 +1830,13 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
                 "theta_acc": 0.0,
             }
         obs_x_vel, obs_y_vel, obs_theta_vel = vel_rcs_2_fcs(
-            actual_gc,
+            belief_gc,
             motion_obs["x_vel_cm_s"],
             motion_obs["y_vel_cm_s"],
             motion_obs["theta_vel_rad_s"],
         )
         obs_x_acc, obs_y_acc, obs_theta_acc = acc_rcs_2_fcs(
-            actual_gc,
+            belief_gc,
             motion_obs["x_acc_cm_s2"],
             motion_obs["y_acc_cm_s2"],
             motion_obs["theta_acc_rad_s2"],
@@ -1860,9 +1860,6 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
     actual_y_acc = [gc_value(h, "actual", "y", 2) for h in history]
     actual_theta_acc = [gc_value(h, "actual", "theta", 2) for h in history]
 
-    observed_x = [h["observed_pose"]["x_cm"] for h in history]
-    observed_y = [h["observed_pose"]["y_cm"] for h in history]
-    observed_theta = [h["observed_pose"]["theta_rad"] for h in history]
     observed_motion = [observed_motion_fcs(h) for h in history]
     observed_x_vel = [obs["x_vel"] for obs in observed_motion]
     observed_y_vel = [obs["y_vel"] for obs in observed_motion]
@@ -1975,26 +1972,20 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
         ax0.text(0.01, 0.25, hyper_text, fontsize=9, family="monospace", va="top", linespacing=1.35)
 
     ax1 = fig_pos.add_subplot(gs_pos[pos_row_offset, 0])
-    if settings["noise_enabled"]:
-        ax1.plot(steps, observed_x, label="Sensory observation x")
-    ax1.plot(steps, belief_x, label="Belief x")
-    ax1.plot(steps, actual_x, label="Actual x")
+    ax1.plot(steps, belief_x, label="Belief x", color="tab:orange")
+    ax1.plot(steps, actual_x, label="Actual x", color="tab:green")
     ax1.set_ylabel("x forward (cm)")
     ax1.legend(loc="center right")
 
     ax2 = fig_pos.add_subplot(gs_pos[pos_row_offset + 1, 0], sharex=ax1)
-    if settings["noise_enabled"]:
-        ax2.plot(steps, observed_y, label="Sensory observation y")
-    ax2.plot(steps, belief_y, label="Belief y")
-    ax2.plot(steps, actual_y, label="Actual y")
+    ax2.plot(steps, belief_y, label="Belief y", color="tab:orange")
+    ax2.plot(steps, actual_y, label="Actual y", color="tab:green")
     ax2.set_ylabel("y left (cm)")
     ax2.legend(loc="center right")
 
     ax3 = fig_pos.add_subplot(gs_pos[pos_row_offset + 2, 0], sharex=ax1)
-    if settings["noise_enabled"]:
-        ax3.plot(steps, observed_theta, label="Sensory observation theta")
-    ax3.plot(steps, belief_theta, label="Belief theta")
-    ax3.plot(steps, actual_theta, label="Actual theta")
+    ax3.plot(steps, belief_theta, label="Belief theta", color="tab:orange")
+    ax3.plot(steps, actual_theta, label="Actual theta", color="tab:green")
     ax3.set_ylabel("theta (rad)")
     ax3.legend(loc="center right")
 
@@ -2018,25 +2009,25 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
 
     ax5 = fig_vel.add_subplot(gs_vel[0, 0])
     if settings["noise_enabled"]:
-        ax5.plot(steps, observed_x_vel, label="Sensory observation x dot")
-    ax5.plot(steps, belief_x_vel, label="Belief x dot")
-    ax5.plot(steps, actual_x_vel, label="Actual x dot")
+        ax5.plot(steps, observed_x_vel, label="Observations transformed into FCS\nusing belief heading", color="tab:blue")
+    ax5.plot(steps, belief_x_vel, label="Belief x dot", color="tab:orange")
+    ax5.plot(steps, actual_x_vel, label="Actual x dot", color="tab:green")
     ax5.set_ylabel("x vel (cm/s)")
     ax5.legend(loc="center right")
 
     ax6 = fig_vel.add_subplot(gs_vel[1, 0], sharex=ax5)
     if settings["noise_enabled"]:
-        ax6.plot(steps, observed_y_vel, label="Sensory observation y dot")
-    ax6.plot(steps, belief_y_vel, label="Belief y dot")
-    ax6.plot(steps, actual_y_vel, label="Actual y dot")
+        ax6.plot(steps, observed_y_vel, label="Observations transformed into FCS\nusing belief heading", color="tab:blue")
+    ax6.plot(steps, belief_y_vel, label="Belief y dot", color="tab:orange")
+    ax6.plot(steps, actual_y_vel, label="Actual y dot", color="tab:green")
     ax6.set_ylabel("y vel (cm/s)")
     ax6.legend(loc="center right")
 
     ax7 = fig_vel.add_subplot(gs_vel[2, 0], sharex=ax5)
     if settings["noise_enabled"]:
-        ax7.plot(steps, observed_theta_vel, label="Sensory observation theta dot")
-    ax7.plot(steps, belief_theta_vel, label="Belief theta dot")
-    ax7.plot(steps, actual_theta_vel, label="Actual theta dot")
+        ax7.plot(steps, observed_theta_vel, label="Observation", color="tab:blue")
+    ax7.plot(steps, belief_theta_vel, label="Belief theta dot", color="tab:orange")
+    ax7.plot(steps, actual_theta_vel, label="Actual theta dot", color="tab:green")
     ax7.set_ylabel("theta vel (rad/s)")
     ax7.set_xlabel("step")
     ax7.legend(loc="center right")
@@ -2055,25 +2046,25 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
 
     ax8 = fig_acc.add_subplot(gs_acc[0, 0])
     if settings["noise_enabled"]:
-        ax8.plot(steps, observed_x_acc, label="Sensory observation x ddot")
-    ax8.plot(steps, belief_x_acc, label="Belief x ddot")
-    ax8.plot(steps, actual_x_acc, label="Actual x ddot")
+        ax8.plot(steps, observed_x_acc, label="Observations transformed into FCS\nusing belief heading", color="tab:blue")
+    ax8.plot(steps, belief_x_acc, label="Belief x ddot", color="tab:orange")
+    ax8.plot(steps, actual_x_acc, label="Actual x ddot", color="tab:green")
     ax8.set_ylabel("x acc (cm/s^2)")
     ax8.legend(loc="center right")
 
     ax9 = fig_acc.add_subplot(gs_acc[1, 0], sharex=ax8)
     if settings["noise_enabled"]:
-        ax9.plot(steps, observed_y_acc, label="Sensory observation y ddot")
-    ax9.plot(steps, belief_y_acc, label="Belief y ddot")
-    ax9.plot(steps, actual_y_acc, label="Actual y ddot")
+        ax9.plot(steps, observed_y_acc, label="Observations transformed into FCS\nusing belief heading", color="tab:blue")
+    ax9.plot(steps, belief_y_acc, label="Belief y ddot", color="tab:orange")
+    ax9.plot(steps, actual_y_acc, label="Actual y ddot", color="tab:green")
     ax9.set_ylabel("y acc (cm/s^2)")
     ax9.legend(loc="center right")
 
     ax10 = fig_acc.add_subplot(gs_acc[2, 0], sharex=ax8)
     if settings["noise_enabled"]:
-        ax10.plot(steps, observed_theta_acc, label="Sensory observation theta ddot")
-    ax10.plot(steps, belief_theta_acc, label="Belief theta ddot")
-    ax10.plot(steps, actual_theta_acc, label="Actual theta ddot")
+        ax10.plot(steps, observed_theta_acc, label="Observation", color="tab:blue")
+    ax10.plot(steps, belief_theta_acc, label="Belief theta ddot", color="tab:orange")
+    ax10.plot(steps, actual_theta_acc, label="Actual theta ddot", color="tab:green")
     ax10.set_ylabel("theta acc (rad/s^2)")
     ax10.set_xlabel("step")
     ax10.legend(loc="center right")
