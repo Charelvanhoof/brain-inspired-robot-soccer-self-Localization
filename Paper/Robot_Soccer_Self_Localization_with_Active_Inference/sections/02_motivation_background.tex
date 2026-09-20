@@ -1,7 +1,7 @@
 \section{Motivation and Requirement}
 \label{sec:motivation-background}
 
-The goal of our algorithm is to estimate the robot pose on the soccer field in the field coordinate system (FCS): position $x,y$ and orientation angle $\theta$. Observations are expressed in the robot coordinate system (RCS): motion observations such as speed and acceleration from odometry and IMU sensing, and visible landmarks such as goals, corners, line intersections, and the center circle. With this information, the current belief represented in red in Fig.~\ref{fig:localization-requirement} must find the actual robot pose generating the observations in green.
+The goal of our algorithm is to estimate the robot pose on the soccer field in the field coordinate system (FCS): position $x,y$ and orientation angle $\theta$. Observations are expressed in the robot coordinate system (RCS): odometry (velocity) and the IMU (acceleration) provide motion observations in $x,y$, and $\theta$, while visible landmarks, such as goals, corners, and the centre circle, are observed in $x$ and $y$, from which their bearing angle is calculated. With this information, the current belief represented in red in Fig.~\ref{fig:localization-requirement} must find the actual robot pose generating the observations in green.
 
 \begin{figure}[!htbp]
     \centering

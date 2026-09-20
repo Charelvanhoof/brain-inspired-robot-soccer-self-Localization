@@ -91,7 +91,7 @@ Free energy is therefore low when one field-pose belief is jointly consistent wi
             D^\top \tilde{\Pi}_{g}\tilde{\epsilon}_{g}
             +
             \left(
-                \partial_{\mu_g}\tilde{f}(\tilde{\mu}_{g})
+                \partial_{\tilde\mu_g}\tilde{f}(\tilde{\mu}_{g})
             \right)^\top
             \tilde{\Pi}_{g}\tilde{\epsilon}_{g}
         \right]
@@ -100,7 +100,7 @@ Free energy is therefore low when one field-pose belief is jointly consistent wi
     \underbrace{
         \sum_{\mathrm{landmarks}}
         \left(
-            \partial_{\mu_g}\tilde{g}(\tilde{\mu}_{g})
+            \partial_{\tilde\mu_g}\tilde{g}(\tilde{\mu}_{g})
         \right)^\top
         \tilde{\Pi}_{p}\tilde{\epsilon}_{p}
     }_{\text{landmark prediction errors}}.
@@ -140,10 +140,9 @@ To keep the notation compact, the following equations show the $x$ component, $\
         0
     \end{bmatrix}
     -
-    f_{\mathrm{RCS}\rightarrow\mathrm{FCS}}
     \begin{bmatrix}
-        v^{\mathrm{odom}} \\
-        a^{\mathrm{IMU}} \\
+        f_{\mathrm{RCS}\rightarrow\mathrm{FCS}}(v^{\mathrm{odom}})_x \\
+        f_{\mathrm{RCS}\rightarrow\mathrm{FCS}}(a^{\mathrm{IMU}})_x \\
         0
     \end{bmatrix}
     \nonumber \\
@@ -154,7 +153,7 @@ To keep the notation compact, the following equations show the $x$ component, $\
     \label{eq:motion-error-x}
 \end{align}
 Here, $D$ is the generalized-coordinate shift operator: it shifts the vector entries up by one and adds a zero at the bottom.
-The term $\tilde{f}$ is the motion generative model. In this implementation, we choose to use the available sensory odometry and IMU measurements directly, rather than motor commands or a separate movement function. To make use of these motion sensory observations, they are translated from RCS into FCS. Since the soccer-field geometry is known, this is a straightforward RCS-to-FCS translation, see Appendix~\ref{app:coordinate-conventions}, and the same transform is used for both velocity and acceleration observations.
+The term $\tilde{f}$ is the motion generative model. In this implementation, we choose to use the available sensory odometry and IMU measurements directly, rather than motor commands or a separate movement function. To make use of these motion sensory observations, they are translated from RCS into FCS. Since the soccer-field geometry is known, this is a straightforward RCS-to-FCS translation using the belief heading, see Appendix~\ref{app:coordinate-conventions}, and the same transform is used for both velocity and acceleration observations.
 The corresponding motion precision matrix for the $x$ component is
 \begin{equation}
     \tilde{\Pi}_{g,x}
@@ -166,7 +165,7 @@ The corresponding motion precision matrix for the $x$ component is
     \end{bmatrix},
     \label{eq:motion-precision-x}
 \end{equation}
-which contains the precisions of the odometry and IMU prediction errors. In this implementation these precisions are fixed parameters and set to 1, and they can be tuned if required. Motion in $x$, $y$, and $\theta$ is treated as factorized, matching the robot-soccer setting where omnidirectional wheels or humanoid stepping can produce independent motion components. As a design choice, the term $\left(\partial_{\mu_g}\tilde{f}(\tilde{\mu}_g)\right)^\top$ is zero because the motion is not dependent on the current field position or angle.
+which contains the precisions of the odometry and IMU prediction errors. In this implementation these precisions are fixed parameters and set to 1, and they can be tuned if required. Motion in $x$, $y$, and $\theta$ is treated as factorized, matching the robot-soccer setting where omnidirectional wheels or humanoid stepping can produce independent motion components. As a design choice, the term $\left(\partial_{\tilde\mu_g}\tilde{f}(\tilde{\mu}_g)\right)^\top$ is zero because the motion is not dependent on the current field position or angle.
 
 \subsubsection{Landmark Part}
 \label{subsec:gradient-landmarks}
@@ -197,7 +196,7 @@ To keep the notation compact, the following equations show the x coordinate of o
 Here, $y_x$ is the observed landmark $x$ position in RCS and $g_{\mathrm{FCS}\rightarrow\mathrm{RCS}}(\mu_g)_x$ is the predicted landmark $x$ position in RCS. The same construction is used for the observed landmark $y$ position and $\theta$ angle.
 Landmark observations provide relative $x$ and $y$ positions, not relative velocity or acceleration, so there are no generalized-coordinate rows for landmark velocity or acceleration in the sensory prediction error.
 The soccer field geometry is predefined, so the landmark observation model and its Jacobian can be calculated straightforwardly from the known FCS/RCS coordinate conventions, see Appendix~\ref{app:coordinate-conventions}.
-The term $\partial_{\mu_g}\tilde{g}(\tilde{\mu}_g)$ in Eq.~\ref{eq:slide15-generic-update} is the landmark Jacobian $\boldsymbol{J}_{\ell}$. It describes how small changes in the robot pose, including $x$, $y$, and $\theta$, affect the predicted landmark observation.
+The term $\partial_{\tilde\mu_g}\tilde{g}(\tilde{\mu}_g)$ in Eq.~\ref{eq:slide15-generic-update} is the landmark Jacobian $\boldsymbol{J}_{\ell}$. It describes how small changes in the robot pose, including $x$, $y$, and $\theta$, affect the predicted landmark observation.
 
 For the observed landmark $x$ coordinate, the corresponding landmark precision matrix is
 \begin{equation}
@@ -214,16 +213,15 @@ For the observed landmark $x$ coordinate, the corresponding landmark precision m
 \subsection{Distance-Weighted Precision Modifier}
 \label{subsec:distance-weighted-precision}
 
-The first trials of the model worked well for most field positions, but showed unstable behavior outside the field corners. This revealed a critical issue in the landmark update: distant landmark observations cannot be treated as equally precise as nearby observations. Small angular errors produce larger Cartesian residuals at longer range, causing distant-landmark prediction errors to dominate the update and pull the belief away from the correct pose. Moreover, camera-based position estimates become less precise at longer distances because the pixel-per-meter ratio decreases with distance. 
+A useful optional refinement is to make landmark precision depend on observation distance. Camera-based position estimates generally become less precise at longer distances because the pixel-per-meter ratio decreases with range. Distance weighting provides a simple way to represent this range-dependent confidence in the landmark update. It is not required for convergence: suitable learning-rate settings can also yield stable behavior. As a practical design choice, we use a precision distance modifier based on the landmark's predicted position in RCS:
 
-For a predicted landmark range, the implementation uses
 \begin{equation}
-    d_\ell =
-    \sqrt{
-        \left(x_{pl}\right)^2
-        +
-        \left(y_{pl}\right)^2
-    },
+d_\ell =
+\sqrt{
+    \left(g(\mu_g)_{x,\ell}\right)^2
+    +
+    \left(g(\mu_g)_{y,\ell}\right)^2
+},
     \qquad
     \rho_\ell
     =
@@ -240,10 +238,7 @@ In the proof-of-concept experiments, $d_{\mathrm{ref}}=600$ cm and $\rho_{\min}=
 \label{subsec:update-rules}
 
 For the $x$ field-pose component, this gives the following straightforward
-matrix calculation. Here, $\boldsymbol{J}_{\ell,g_x}$ is the column of the
-landmark Jacobian associated with belief component $g_x$, and the scalar factors
-$\eta^{c}_{xy}$, $\eta^{v}_{xy}$, and $\eta^{a}_{xy}$ denote learning rates for
-the camera, odometry-velocity, and IMU-acceleration update terms.
+matrix calculation. Here, $\boldsymbol{J}_{g_x,\ell}$ is the column of the landmark Jacobian associated with belief component $g_x$, and the scalar factors $\eta^{c}_{xy}$, $\eta^{v}_{xy}$, and $\eta^{a}_{xy}$ denote learning rates for the camera, odometry-velocity, and IMU-acceleration update terms.
 
 {
 \small
@@ -259,17 +254,17 @@ the camera, odometry-velocity, and IMU-acceleration update terms.
 \begin{bmatrix}
 0\\
 \eta^{v}_{xy}\Pi_{\mathrm{odo}}
-\left(\mu'_{g_x}-f(v^{\mathrm{odom}})\right)\\
+\left(\mu'_{g_x}-f(v^{\mathrm{odom}})_x\right)\\
 \eta^{a}_{xy}\Pi_{\mathrm{IMU}}
-\left(\mu''_{g_x}-f(a^{\mathrm{IMU}})\right)
+\left(\mu''_{g_x}-f(a^{\mathrm{IMU}})_x\right)
 \end{bmatrix}
 \!+\!
 \sum_{\ell}
 \begin{bmatrix}
 \eta^{c}_{xy}
-\rho_\ell \boldsymbol{J}_{\ell,g_x}^{\top}
+\rho_\ell \boldsymbol{J}_{g_x,\ell}^{\top}
 \boldsymbol{\Pi}_{\mathrm{cam}}
-\left(y_\ell-g(\mu_g)_\ell\right)\\
+\left(y_{x,\ell}-g(\mu_g)_{x,\ell}\right)\\
 0\\
 0
 \end{bmatrix}.

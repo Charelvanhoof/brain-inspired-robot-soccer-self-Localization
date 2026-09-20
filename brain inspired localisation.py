@@ -70,6 +70,7 @@ INFER_STEPS_SHORT = 100
 INFER_STEPS_LONG = 2000
 INFER_STEPS_MAX = 5000
 PAPER_VISIBILITY_STRESS_DURATION_S = 2.0 * 60.0 * 60.0
+PAPER_LM_TRIAL_DURATION_S = 30.0
 CONVERGE_TEST_RUNS = 100
 CONVERGE_TEST_USE_REGRESSION_SET = False
 CONV_TOL_X_CM = 3.0
@@ -253,6 +254,14 @@ LANDMARK_SCENARIO_PROFILES = [
         ],
     },
     {
+        "name": "3",
+        "landmark_ids": [
+            "center",
+            "goal_opponent",
+            "goal_own",
+        ],
+    },
+    {
         "name": "5",
         "landmark_ids": [
             "goal_opponent",
@@ -264,6 +273,7 @@ LANDMARK_SCENARIO_PROFILES = [
     },
 ]
 ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = LANDMARK_SCENARIO_PROFILES[0]["name"]
+PAPER_LM_PROFILE_NAMES = ("1", "2", "3", "5", "9")
 
 
 def make_landmark_metadata():
@@ -1522,6 +1532,92 @@ def simulation_inference_step(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
 
 
 # --- Simulated experiment runner ---
+def reset_paper_lm_experiment(saved_setup):
+    """Create an independent trial at the saved actual/belief poses and path start."""
+    from copy import deepcopy
+
+    experiment = deepcopy(saved_setup)
+    reset_landmark_obstruction_state()
+    reset_motion_slip_state()
+    return experiment
+
+
+def run_paper_lm_batch(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATION_S, progress_callback=None, record_callback=None):
+    """Run N fixed-start trials per landmark profile; retain error series and the last history."""
+    from array import array
+
+    global ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    global MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN
+    max_steps = max(1, int(round(duration_s / saved_setup["settings"]["dt"])))
+    previous_profile = ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    previous_obstructions = dict(LANDMARK_OBSTRUCTION_REMAINING_S)
+    previous_slip = (MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN)
+    result = {"trials": [], "last_history": [], "stopped": False, "runs_per_profile": saved_setup["runs"]}
+    try:
+        for profile_name in PAPER_LM_PROFILE_NAMES:
+            ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = profile_name
+            for trial_number in range(1, saved_setup["runs"] + 1):
+                experiment = reset_paper_lm_experiment(saved_setup)
+                settings = experiment["settings"]
+                settings["landmark_scenario_profile"] = profile_name
+                settings["landmark_scenario_count"] = len(active_simulation_landmarks())
+                history = []
+                trial = {
+                    "landmark_profile": profile_name,
+                    "trial": trial_number,
+                    "dt": settings["dt"],
+                    "actual_start": robot_pose_view(experiment["robots"]["actual"]),
+                    "belief_start": robot_pose_view(experiment["robots"]["belief"]),
+                    "position_error_cm": array("d"),
+                    "heading_error_deg": array("d"),
+                    "steps": 0,
+                    "completed": False,
+                    "target_activation_steps": [],
+                }
+                result["trials"].append(trial)
+                result["last_history"] = history
+                if record_callback is not None:
+                    record_callback(profile_name, trial_number, {
+                        "step": 0,
+                        "actual_pose": trial["actual_start"],
+                        "belief_pose": trial["belief_start"],
+                        "visible_landmark_count": None,
+                        "free_energy": None,
+                        "settings": settings,
+                    })
+                for step in range(1, max_steps + 1):
+                    if progress_callback is not None and (step == 1 or (step - 1) % 100 == 0):
+                        if progress_callback(profile_name, trial_number, saved_setup["runs"], step - 1, max_steps) is False:
+                            result["stopped"] = True
+                            return result
+                    path_state = experiment["demo_state"].get("path_state", {})
+                    previous_target = (path_state.get("target_x_cm"), path_state.get("target_y_cm"))
+                    path_step(experiment)
+                    path_state = experiment["demo_state"].get("path_state", {})
+                    next_target = (path_state.get("target_x_cm"), path_state.get("target_y_cm"))
+                    if next_target != previous_target:
+                        trial["target_activation_steps"].append(step)
+                    y_obs, y_hat, motion_obs, free_energy = simulation_inference_step(
+                        experiment["robots"], saved_setup["algorithm_name"],
+                    )
+                    record = snapshot_record(step, experiment["robots"], y_obs, y_hat, motion_obs, free_energy, settings)
+                    history.append(record)
+                    if record_callback is not None:
+                        record_callback(profile_name, trial_number, record)
+                    actual = record["actual_pose"]
+                    belief = record["belief_pose"]
+                    trial["position_error_cm"].append(math.hypot(belief["x_cm"] - actual["x_cm"], belief["y_cm"] - actual["y_cm"]))
+                    trial["heading_error_deg"].append(abs(math.degrees(wrap_rad(belief["theta_rad"] - actual["theta_rad"]))))
+                    trial["steps"] = step
+                trial["completed"] = True
+    finally:
+        ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = previous_profile
+        LANDMARK_OBSTRUCTION_REMAINING_S.clear()
+        LANDMARK_OBSTRUCTION_REMAINING_S.update(previous_obstructions)
+        MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN = previous_slip
+    return result
+
+
 def run_experiment(
     robots,
     algorithm_name,
@@ -1583,6 +1679,8 @@ def run_experiment(
 # =========================
 # REPORT
 # =========================
+PAPER_LM_REPORT_PROFILE_NAMES = ("3", "5", "9")
+
 def robot_generalized_coordinate_view(robot_fcs_gc):
     return robot_gc_view(robot_fcs_gc)
 
@@ -1726,6 +1824,77 @@ def compact_tracking_export_row(record, time_s):
     }
 
 
+def export_paper_lm_dataset(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATION_S, progress_callback=None):
+    """Stream all P-LM trials to one CSV, with settings and completion metadata."""
+    import csv
+    import datetime
+    import json
+    import os
+
+    reports_dir = os.path.join(os.getcwd(), "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    base_path = os.path.join(reports_dir, f"paper_lm_dataset_{timestamp}")
+    csv_path = base_path + ".csv"
+    json_path = base_path + ".json"
+    fieldnames = [
+        "landmark_profile", "trial", "step", "time_s",
+        "actual_x_cm", "actual_y_cm", "actual_theta_rad",
+        "belief_x_cm", "belief_y_cm", "belief_theta_rad",
+        "position_error_cm", "heading_error_deg",
+        "visible_landmark_count", "free_energy",
+    ]
+    rows_written = 0
+    with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        def write_record(profile, trial, record):
+            nonlocal rows_written
+            values = compact_tracking_export_row(record, record["step"] * record["settings"]["dt"])
+            row = {key: values[key] for key in fieldnames if key not in {"landmark_profile", "trial"}}
+            row.update(landmark_profile=profile, trial=trial)
+            writer.writerow(row)
+            rows_written += 1
+
+        result = run_paper_lm_batch(
+            saved_setup, path_step, duration_s=duration_s,
+            progress_callback=progress_callback, record_callback=write_record,
+        )
+
+    metadata = {
+        "csv_file": os.path.basename(csv_path),
+        "rows": rows_written,
+        "runs_per_profile": saved_setup["runs"],
+        "requested_trial_duration_s": duration_s,
+        "steps_per_trial": max(1, int(round(duration_s / saved_setup["settings"]["dt"]))),
+        "algorithm_name": saved_setup["algorithm_name"],
+        "settings": saved_setup["settings"],
+        "landmark_profiles": [landmark_scenario_profile_by_name(name) for name in PAPER_LM_PROFILE_NAMES],
+        "actual_start": robot_pose_view(saved_setup["robots"]["actual"]),
+        "belief_start": robot_pose_view(saved_setup["robots"]["belief"]),
+        "ball": saved_setup["ball"],
+        "path_start": {key: value for key, value in saved_setup["demo_state"].items() if key != "paths"},
+        "path_random_state": saved_setup["path_random_state"],
+        "stopped": result["stopped"],
+        "trials": [
+            {key: trial[key] for key in ("landmark_profile", "trial", "steps", "completed", "target_activation_steps")}
+            for trial in result["trials"]
+        ],
+        "data_notes": {
+            "time_s": "Elapsed simulation time within each trial; step 0 is the saved initial state.",
+            "position_error_cm": "Euclidean distance between belief and actual position.",
+            "heading_error_deg": "Absolute wrapped belief-minus-actual heading error, in degrees.",
+            "visible_landmark_count": "Number of observations supplied for this step; blank at step 0.",
+            "free_energy": "Inference diagnostic for the update producing this row; blank at step 0.",
+        },
+    }
+    with open(json_path, "w", encoding="utf-8") as json_file:
+        json.dump(metadata, json_file, indent=2)
+    result.update(csv_path=csv_path, json_path=json_path, rows=rows_written)
+    return result
+
+
 def simulation_settings_report_lines(settings):
     odometry_bias_text = (
         f"Odom bias: {'YES' if settings.get('odometry_bias_enabled') else 'NO'}"
@@ -1794,6 +1963,176 @@ def learning_rate_report_row(settings):
         f"acc xy={format_display_value(report_value(settings, 'lr_motion_acc_xy', 'motion_lr_acc_xy', MOTION_LR_ACC_XY))}   "
         f"acc a={format_display_value(report_value(settings, 'lr_motion_acc_theta', 'motion_lr_acc_theta', MOTION_LR_ACC_THETA))}"
     )
+
+
+def paper_lm_mean_errors(csv_path, metadata):
+    """Compute mean, sample SD and P1/P99 of absolute errors at each time."""
+    import csv
+
+    completed = {
+        (trial["landmark_profile"], trial["trial"])
+        for trial in metadata["trials"]
+        if trial["completed"] and trial["landmark_profile"] in PAPER_LM_REPORT_PROFILE_NAMES
+    }
+    sums = {}
+    with open(csv_path, newline="", encoding="utf-8") as csv_file:
+        for row in csv.DictReader(csv_file):
+            profile = row["landmark_profile"]
+            if (profile, int(row["trial"])) not in completed:
+                continue
+            step = int(row["step"])
+            # Per timepoint: time, count, means, M2 values, and per-axis trial samples.
+            bucket = sums.setdefault(profile, {}).setdefault(step, [float(row["time_s"]), 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], []])
+            bucket[1] += 1
+            errors = (
+                abs(float(row["belief_x_cm"]) - float(row["actual_x_cm"])),
+                abs(float(row["belief_y_cm"]) - float(row["actual_y_cm"])),
+                abs(math.degrees(wrap_rad(float(row["belief_theta_rad"]) - float(row["actual_theta_rad"])))),
+            )
+            # Welford accumulation avoids cancellation when trials are nearly equal.
+            for idx, error in enumerate(errors):
+                delta = error - bucket[2 + idx]
+                bucket[2 + idx] += delta / bucket[1]
+                bucket[5 + idx] += delta * (error - bucket[2 + idx])
+                bucket[8 + idx].append(error)
+
+    curves = {}
+    for profile in PAPER_LM_REPORT_PROFILE_NAMES:
+        if profile not in sums:
+            continue
+        n = sum(p == profile for p, _ in completed)
+        steps = sorted(sums[profile])
+        if steps != list(range(metadata["steps_per_trial"] + 1)) or any(sums[profile][step][1] != n for step in steps):
+            raise ValueError(f"P-LM CSV has missing or duplicate samples for LM {profile}")
+        buckets = [sums[profile][step] for step in steps]
+        curves[profile] = {
+            "n": n,
+            "time_s": [values[0] for values in buckets],
+            "x_cm": [values[2] for values in buckets],
+            "y_cm": [values[3] for values in buckets],
+            "angle_deg": [values[4] for values in buckets],
+        }
+        for idx, key in enumerate(("x_cm", "y_cm", "angle_deg")):
+            curves[profile][key + "_sd"] = [math.sqrt(max(0.0, values[5 + idx]) / (n - 1)) for values in buckets] if n > 1 else None
+            # Linear interpolation between ranked observations, separately at each step.
+            samples = [sorted(values[8 + idx]) for values in buckets]
+            for percentile in (1, 99):
+                rank = (n - 1) * percentile / 100.0
+                lower, upper = math.floor(rank), math.ceil(rank)
+                fraction = rank - lower
+                curves[profile][key + f"_p{percentile}"] = [
+                    values[lower] + fraction * (values[upper] - values[lower])
+                    for values in samples
+                ]
+    return curves
+
+
+def plot_paper_lm_report(csv_path, json_path, open_pdf=True):
+    """Make a settings report and a paper figure from the saved P-LM dataset."""
+    import json
+    import os
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    with open(json_path, encoding="utf-8") as json_file:
+        metadata = json.load(json_file)
+    curves = paper_lm_mean_errors(csv_path, metadata)
+    if not curves:
+        return {}
+    # Older datasets may be longer; show their first thirty seconds without editing the CSV.
+    for curve in curves.values():
+        sample_count = sum(time_s <= PAPER_LM_TRIAL_DURATION_S + 1e-9 for time_s in curve["time_s"])
+        for key, values in curve.items():
+            if isinstance(values, list):
+                curve[key] = values[:sample_count]
+    settings = metadata["settings"]
+    target_times = sorted({
+        step * settings["dt"]
+        for trial in metadata["trials"]
+        if trial["completed"] and trial["landmark_profile"] in curves
+        for step in trial.get("target_activation_steps", [])
+        if step * settings["dt"] <= PAPER_LM_TRIAL_DURATION_S + 1e-9
+    }) if settings["demo_path_name"] == "Random targets" else []
+    counts = ", ".join(f"LM {profile}: n={curves[profile]['n'] if profile in curves else 0}" for profile in PAPER_LM_REPORT_PROFILE_NAMES)
+    simulation_lines = simulation_settings_report_lines(settings)[:-1]
+    header_lines = [
+        "P-LM Experiment Report - Mean absolute tracking error",
+        f"Source: {os.path.basename(csv_path)}",
+        f"Algorithm: {metadata['algorithm_name']}   Path: {settings['demo_path_name']}   Profile: {settings['profile_name']}",
+        f"Trial duration: {metadata['requested_trial_duration_s']:g} s   DT={settings['dt']:g} s   Requested N={metadata['runs_per_profile']} per LM profile",
+        f"Displayed time window: 0-{max(curve['time_s'][-1] for curve in curves.values()):g} s",
+        f"Completed trials used: {counts}   Batch {'STOPPED' if metadata['stopped'] else 'COMPLETE'}",
+        format_ros_pose_line("Start actual", metadata["actual_start"]) + "   " + format_ros_pose_line("Start belief", metadata["belief_start"]),
+        f"Ball (FCS): x={metadata['ball']['x_cm']:g} cm, y={metadata['ball']['y_cm']:g} cm; identical starts and path in every trial",
+        f"Noise: {'YES' if settings['noise_enabled'] else 'NO'}   landmark sigma x={settings['noise_x_cm']:g}, y={settings['noise_y_cm']:g} cm   motion={100 * settings['motion_noise_ratio']:g}%",
+        "   |   ".join(simulation_lines[:2]),
+        "   |   ".join(simulation_lines[2:4]),
+        "   |   ".join(simulation_lines[4:]),
+        precision_report_row(settings) + "   " + precision_distance_modifier_report_row(settings),
+        learning_rate_report_row(settings),
+        "Profiles: " + "; ".join(f"{p['name']} = {', '.join(p['landmark_ids'])}" for p in metadata["landmark_profiles"] if p["name"] in PAPER_LM_REPORT_PROFILE_NAMES),
+        "Mean of |belief - actual| at each time; heading difference wrapped to [-pi, pi). No smoothing. Time zero included.",
+        "Shading: P1-P99 across trials at each timestep (middle 98%; linear percentile interpolation). No clipping; no band for n<2.",
+    ]
+    header = "\n".join(textwrap.fill(line, width=130, break_long_words=False, break_on_hyphens=False) for line in header_lines)
+    if target_times:
+        header += "\nThin red vertical lines: next random target activated (recorded simulation step)."
+    base_path = os.path.splitext(csv_path)[0]
+    paths = {"report_path": base_path + "_report.pdf", "paper_path": base_path + "_graph.pdf"}
+    colors = {"1": "tab:blue", "2": "tab:orange", "3": "tab:red", "5": "tab:green", "9": "tab:purple"}
+    styles = {"1": "-", "2": "--", "3": (0, (3, 1, 1, 1)), "5": "-.", "9": ":"}
+    panels = (("x_cm", "X error (cm)"), ("y_cm", "Y error (cm)"), ("angle_deg", "Heading error (deg)"))
+    for paper_ready, output_path in ((False, paths["report_path"]), (True, paths["paper_path"])):
+        pages = [[panel] for panel in panels] if paper_ready else [panels]
+        with PdfPages(output_path) as pdf:
+            for page_panels in pages:
+                fig = plt.figure(figsize=(15, 3) if paper_ready else (15, 10))
+                grid = fig.add_gridspec(1 if paper_ready else 4, 1, height_ratios=[1] if paper_ready else [2.5, 1, 1, 1])
+                # Match each standalone graph to the report panel's physical dimensions.
+                fig.subplots_adjust(left=0.08, right=0.98,
+                                    top=(0.55 + report_panel_height) / 3 if paper_ready else 0.97,
+                                    bottom=0.55 / 3 if paper_ready else 0.09, hspace=0.35)
+                offset = 0 if paper_ready else 1
+                if paper_ready:
+                    component = {"x_cm": "X", "y_cm": "Y", "angle_deg": "heading"}[page_panels[0][0]]
+                    counts = {curve["n"] for curve in curves.values()}
+                    counts_text = f"N={next(iter(counts))}" if len(counts) == 1 else ", ".join(f"{profile} LM: N={curve['n']}" for profile, curve in curves.items())
+                    fig.suptitle(f"Absolute {component} error over time by landmark count\nLine: mean | Shading: P1-P99 | " + counts_text, fontsize=10, y=0.99)
+                else:
+                    header_axis = fig.add_subplot(grid[0, 0])
+                    header_axis.axis("off")
+                    header_axis.text(0, 1, header, fontsize=9, family="monospace", va="top", linespacing=1.4)
+                first_axis = None
+                for idx, (key, label) in enumerate(page_panels):
+                    axis = fig.add_subplot(grid[idx + offset, 0], sharex=first_axis)
+                    if first_axis is None:
+                        first_axis = axis
+                    for profile, curve in curves.items():
+                        if curve["n"] > 1:
+                            axis.fill_between(curve["time_s"], curve[key + "_p1"], curve[key + "_p99"],
+                                              color=colors[profile], alpha=0.16, linewidth=0)
+                        legend_label = f"{profile} LM" if paper_ready else f"LM {profile} (n={curve['n']})"
+                        axis.plot(curve["time_s"], curve[key], label=legend_label, color=colors[profile], linestyle=styles[profile], linewidth=1.3)
+                    axis.set_ylabel(label, fontsize=10)
+                    for event_idx, time_s in enumerate(target_times):
+                        axis.axvline(time_s, color="red", linewidth=0.6, alpha=0.65,
+                                     label=("Target" if paper_ready else "Next target") if event_idx == 0 else "_nolegend_")
+                    axis.set_ylim(bottom=0)
+                    axis.grid(True, alpha=0.25)
+                    if paper_ready:
+                        axis.tick_params(labelsize=10)
+                    if idx == 0:
+                        axis.legend(loc="lower left", bbox_to_anchor=(0, 1.01), ncol=4 if target_times else 3,
+                                    fontsize=8, borderaxespad=0,
+                                    columnspacing=2.0, handlelength=2.0)
+                    if paper_ready or idx == 2:
+                        axis.set_xlabel("Simulation time (s)", fontsize=10)
+                if not paper_ready:
+                    report_panel_height = axis.get_position().height * fig.get_figheight()
+                pdf.savefig(fig)
+                plt.close(fig)
+    if open_pdf:
+        os.startfile(paths["report_path"])
+    return paths
 
 
 def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_pdf=True):
@@ -3703,10 +4042,7 @@ def step_demo_playback(robot_fcs_gc, demo_state, dt_s):
         stop_speed_cm_s = float(demo_spec.get("stop_speed_cm_s", 25.0))
 
         if distance_cm <= target_tolerance_cm and speed_cm_s <= stop_speed_cm_s:
-            current_x_cm = target_x_cm
-            current_y_cm = target_y_cm
-            path_state["x_cm"] = current_x_cm
-            path_state["y_cm"] = current_y_cm
+            # Switch targets from the current position without snapping to the old target.
             target_x_cm, target_y_cm = choose_random_demo_target(current_x_cm, current_y_cm)
             path_state["target_x_cm"] = target_x_cm
             path_state["target_y_cm"] = target_y_cm
@@ -3834,6 +4170,61 @@ def step_demo_playback(robot_fcs_gc, demo_state, dt_s):
     )
     append_demo_trace_point(demo_state["trace"], next_x_cm, next_y_cm)
     demo_state["time_s"] = next_time_s
+
+
+def capture_paper_lm_setup(robots, ball, demo_state, algorithm_name, profile_name):
+    """Save the UI selection and fixed starting poses for the later P-LM batch."""
+    from copy import deepcopy
+
+    settings = experiment_settings(algorithm_name)
+    settings["profile_name"] = profile_name
+    settings["demo_path_name"] = demo_state["paths"][demo_state["selected_idx"]]["name"]
+    # Save positions/headings exactly; every trial starts with zero motion.
+    saved_robots = {
+        name: make_robot_gc_state(*gc_2_scalar(robots[name]))
+        for name in ("actual", "belief")
+    }
+    saved_ball = dict(ball)
+    saved_demo = {
+        "paths": deepcopy(demo_state["paths"]),
+        "selected_idx": demo_state["selected_idx"],
+        "playing": False,
+        "pending_reset": True,
+        "look_target_x_cm": saved_ball["x_cm"],
+        "look_target_y_cm": saved_ball["y_cm"],
+    }
+    # Give random-target playback its own repeatable sequence, independent of
+    # sensor noise and of how many landmarks a trial observes.
+    sensor_random_state = random.getstate()
+    try:
+        reset_demo_playback_state(deepcopy(saved_robots["actual"]), saved_demo)
+        path_random_state = random.getstate()
+    finally:
+        random.setstate(sensor_random_state)
+    return {
+        "runs": CONVERGE_TEST_RUNS,
+        "algorithm_name": algorithm_name,
+        "settings": settings,
+        "robots": saved_robots,
+        "ball": saved_ball,
+        "demo_state": saved_demo,
+        "path_random_state": path_random_state,
+    }
+
+
+def step_paper_lm_demo(experiment):
+    """Replay the saved path without consuming the sensor random sequence."""
+    sensor_random_state = random.getstate()
+    try:
+        random.setstate(experiment["path_random_state"])
+        step_demo_playback(
+            experiment["robots"]["actual"],
+            experiment["demo_state"],
+            experiment["settings"]["dt"],
+        )
+        experiment["path_random_state"] = random.getstate()
+    finally:
+        random.setstate(sensor_random_state)
 
 
 def export_demo_tracking_dataset(
@@ -4374,6 +4765,8 @@ def main():
     selected_landmark_scenario_profile_idx = landmark_scenario_profile_names.index(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME)
     last_history = []
     converge_test_status = None
+    paper_lm_setup = None
+    paper_lm_result = None
     default_demo_path_idx = next(
         (idx for idx, path in enumerate(DEMO_PATHS) if path["name"] == "Circle"),
         0,
@@ -4596,7 +4989,8 @@ def main():
     row_y += btn_h + row_gap
     convdynamic_btn = pygame.Rect(panel_left, row_y, conv_btn_w, btn_h)
     convdynamic_near_btn = pygame.Rect(convdynamic_btn.right + conv_btn_gap, row_y, conv_btn_w, btn_h)
-    paper_data_btn = pygame.Rect(convdynamic_near_btn.right + conv_btn_gap, row_y, panel_left + panel_inner_w - convdynamic_near_btn.right - conv_btn_gap, btn_h)
+    paper_data_btn = pygame.Rect(convdynamic_near_btn.right + conv_btn_gap, row_y, conv_btn_w, btn_h)
+    paper_lm_btn = pygame.Rect(paper_data_btn.right + conv_btn_gap, row_y, conv_btn_w, btn_h)
     row_y += btn_h + row_gap
     info_top = row_y + 8
 
@@ -4669,7 +5063,12 @@ def main():
         (
             "paper_visibility_dataset",
             paper_data_btn,
-            "Run 2 hours of demo steps headlessly and export compact visibility-stress CSV/JSON metadata",
+            "Run 2 hours with a near-start belief and export visibility-stress CSV/JSON",
+        ),
+        (
+            "paper_lm_setup",
+            paper_lm_btn,
+            "Run N trials of 30 simulated seconds per LM profile (1, 2, 3, 5, 9) with identical starts, ball and path. Save all data to CSV/JSON; report and paper graph show only LM 3, 5, 9",
         ),
         (
             "precision_distance_modifier",
@@ -5141,7 +5540,8 @@ def main():
         draw_button(screen, convcorner_btn, "S-CORN", font_b, (90, 60, 120), (255, 255, 255))
         draw_button(screen, convdynamic_btn, "D-CONV", font_b, (90, 60, 120), (255, 255, 255))
         draw_button(screen, convdynamic_near_btn, "D-NEAR", font_b, (90, 60, 120), (255, 255, 255))
-        draw_button(screen, paper_data_btn, "PAPER 2HRS", font_b, (105, 45, 150), (255, 255, 255))
+        draw_button(screen, paper_data_btn, "P-2hrs", font_b, (105, 45, 150), (255, 255, 255))
+        draw_button(screen, paper_lm_btn, "P-LM", font_b, (105, 45, 150), (255, 255, 255))
 
         lines = []
         lines.append("Rotate robot: hold Q / E")
@@ -5459,7 +5859,53 @@ def main():
                             open_pdf=False,
                         )
                         continue
+                    if paper_lm_btn.collidepoint(mx, my):
+                        paper_lm_setup = capture_paper_lm_setup(
+                            robots,
+                            ball,
+                            demo_state,
+                            algorithm_names[selected_algorithm_idx],
+                            MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                        )
+                        def lm_progress(profile, trial, total, step, max_steps):
+                            nonlocal converge_test_status, running
+                            converge_test_status = f"P-LM {profile}: {trial}/{total}, step {step}/{max_steps}"
+                            safe_draw()
+                            for pending_event in pygame.event.get():
+                                if pending_event.type == pygame.QUIT:
+                                    running = False
+                                    return False
+                                if pending_event.type == pygame.KEYDOWN and pending_event.key == pygame.K_ESCAPE:
+                                    return False
+                                if pending_event.type == pygame.MOUSEBUTTONDOWN and quit_btn.collidepoint(pending_event.pos):
+                                    running = False
+                                    return False
+                            return True
+
+                        demo_state["playing"] = False
+                        saved_analysis_on = analysis_on
+                        analysis_on = False
+                        try:
+                            paper_lm_result = export_paper_lm_dataset(
+                                paper_lm_setup, step_paper_lm_demo, progress_callback=lm_progress,
+                            )
+                        finally:
+                            analysis_on = saved_analysis_on
+                        last_history = paper_lm_result["last_history"]
+                        completed = sum(trial["completed"] for trial in paper_lm_result["trials"])
+                        outcome = "stopped" if paper_lm_result["stopped"] else "finished"
+                        converge_test_status = f"P-LM {outcome}: {completed}/{len(PAPER_LM_PROFILE_NAMES) * paper_lm_setup['runs']} trials saved in reports"
+                        print(f"P-LM CSV: {paper_lm_result['csv_path']}")
+                        print(f"P-LM metadata: {paper_lm_result['json_path']}")
+                        paper_lm_result.update(plot_paper_lm_report(paper_lm_result["csv_path"], paper_lm_result["json_path"]))
+                        continue
                     if paper_data_btn.collidepoint(mx, my):
+                        actual_start = robot_pose_view(robots["actual"])
+                        belief_start = random_nearby_belief_pose(
+                            {"x": actual_start["x_cm"], "y": actual_start["y_cm"], "theta": actual_start["theta_rad"]},
+                            max_offset_cm=50.0,
+                        )
+                        robots["belief"] = make_robot_gc_state(belief_start["x"], belief_start["y"], belief_start["theta"])
                         paper_algorithm_name = algorithm_names[selected_algorithm_idx]
                         paper_profile_name = MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]
                         paper_path_name = demo_state["paths"][demo_state["selected_idx"]]["name"]
@@ -5770,6 +6216,3 @@ def main_cli(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main_cli())
-
-
-

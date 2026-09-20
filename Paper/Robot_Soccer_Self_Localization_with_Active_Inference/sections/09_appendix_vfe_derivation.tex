@@ -39,7 +39,7 @@ Using Bayes' rule, $p(x\mid y)=p(x,y)/p(y)$, gives
     \int q(x;\zeta)\ln p(y)\,dx .
     \label{eq:appendix-kl-expanded}
 \end{align}
-Because $\ln p(y)$ does not depend on $x$, and because $q(x;\zeta)$ integrates to one, this becomes
+Because $\ln p(y)$ does not depend on $x$, and the integral over a probability density $q(x;\zeta)$ integrates to one, this becomes
 \begin{equation}
     D_{\mathrm{KL}}
     \left(
@@ -73,7 +73,9 @@ Since $\ln p(y)$ is independent of the variational parameters $\zeta$, minimizin
 \section{Laplace-Encoded Free Energy Approximation}
 \label{app:laplace-free-energy}
 
-The following compact derivation motivates the Laplace-encoded free-energy form used in Sect.~\ref{subsec:gaussian-errors}. For a detailed mathematical review of the free-energy principle for action and perception, see Buckley et al.~\cite{buckley_free_2017}.
+The full derivation is given by Buckley et al.~\cite{buckley_free_2017}. Here we outline the key steps for the univariate case, using the notation of this paper, to explain how variational free energy leads to precision-weighted prediction-error minimization.
+\\
+
 
 Starting from the variational free energy definition,
 \begin{equation}
@@ -85,7 +87,7 @@ Starting from the variational free energy definition,
         \frac{q(x;\zeta)}{p(x,y)}
     \right) dx ,
 \end{equation}
-and using $\ln(a/b)=\ln(a)-\ln(b)$, define the Laplace-encoded energy as
+and using $\ln(a/b)=\ln(a)-\ln(b)$, and defining the Laplace-encoded energy as
 \begin{equation}
     E(x,y)=-\ln p(x,y).
 \end{equation}
@@ -118,52 +120,42 @@ Substituting this Gaussian into Eq.~\ref{eq:appendix-laplace-energy} yields
     -
     \frac{1}{2}.
 \end{equation}
-Because $q(x;\zeta)$ is sharply peaked around $\mu$, the density is non-zero mainly close to $\mu$. This allows $E(x,y)$ to be rewritten with a second-order Taylor approximation around $x=\mu$. The first-order term vanishes at the mode because the derivative is zero at the peak, giving
+
+Applying a second-order Taylor approximation to $E(x,y)$ around
+$x=\mu$, where the Gaussian density is concentrated, allows us
+to rewrite the approximation as (note: first order derivative is 0 because sharply peaked at $\mu$):
 \begin{equation}
     \mathcal{F}(y,\zeta)
-    \approx
-    E(\mu,y)
-    +
-    \frac{1}{2}
-    \left(
-        \left.
-        \frac{d^2E}{dx^2}
-        \right|_{\mu}
-        \sigma^2
-        -
-        \ln(2\pi\sigma^2)
-        -
-        1
+    \approx E(\mu,y)
+    + \frac{1}{2}\left(
+        \left.\frac{d^2E}{dx^2}\right|_{\mu}\sigma^2
+        - \ln(2\pi\sigma^2)-1
     \right).
-    \label{eq:appendix-laplace-taylor}
 \end{equation}
-Solving $\partial \mathcal{F}/\partial \sigma^2=0$ gives the variance that optimizes free energy:
-\begin{equation}
-    \sigma^{2*}
-    =
-    \left(
-        \left.
-        \frac{d^2E}{dx^2}
-        \right|_{\mu}
-    \right)^{-1}.
-\end{equation}
-Substituting this optimal variance back into Eq.~\ref{eq:appendix-laplace-taylor} gives
+
+
+By solving $\partial\mathcal{F}/\partial\sigma^2=0$ with respect
+to the variance $\sigma^2$, which optimizes the free energy,
+this further simplifies to
 \begin{equation}
     \mathcal{F}(y,\zeta)
-    \approx
-    E(\mu,y)
-    -
-    \frac{1}{2}
-    \ln\left(2\pi\sigma^{2*}\right),
+    \approx E(\mu,y)-\frac{1}{2}\ln(2\pi\sigma^{2*}),
 \end{equation}
-where $\sigma^{2*}$ is determined by the local curvature at $\mu$. For belief updating, the optimization is over the mean $\mu$, and terms that do not change the gradient with respect to $\mu$ can be omitted. This leaves the Laplace-encoded free energy approximation
+
+where $\sigma^{2*}=\left[\left.d^2E/dx^2\right|_{\mu}\right]^{-1}$
+is the variance that optimizes the free energy. It is calculated
+from the local curvature at the mean $\mu$. In other words, the
+free energy only depends on the Gaussian mean $\mu$ and not on
+an independent variance $\sigma^2$, which simplifies the expression.
+To simplify further, we treat the variance correction as constant
+during mean updating. Since the objective is to minimize free
+energy, this constant can be omitted. The Laplace-encoded free
+energy approximation is then written as
+
 \begin{equation}
-    \mathcal{F}(y,\mu)
-    \approx
-    E(\mu,y)
-    =
-    -\ln p(\mu,y).
+    \mathcal{F}(y,\zeta)\approx E(\mu,y)=-\ln p(\mu,y).
 \end{equation}
+\\
 For the robot-localization case, the joint probability can be written as a likelihood times a prior-like motion term:
 \begin{equation}
     p(\mu,y)
@@ -202,7 +194,7 @@ With Gaussian sensory and motion prediction errors,
         -\frac{\left(\mu-f(\mu)\right)^2}{2\sigma_w^2}
     \right).
 \end{align}
-Substituting these densities and using $\ln(ab)=\ln(a)+\ln(b)$, $\ln(e^a)=a$, and $\ln(\sqrt{a})=\frac{1}{2}\ln(a)$ gives
+Substituting these densities and using $\ln(e^a)=a$, and $\ln(\sqrt{a})=\frac{1}{2}\ln(a)$ gives
 \begin{align}
     \mathcal{F}(y,\mu)
     &=
@@ -230,8 +222,7 @@ and precisions $\Pi_z=1/\sigma_z^2$ and $\Pi_w=1/\sigma_w^2$ yields
     -
     \frac{1}{2}\ln\left(\Pi_z\Pi_w\right).
 \end{equation}
-This is the scalar form of the precision-weighted prediction-error objective used in the main text.
-The same argument extends to the multivariate case under a mean-field approximation, where variable sets are partitioned into independent groups. In this paper, that partition gives the motion/grid and sensory/place prediction-error groups used in Eq.~\ref{eq:vfe-motion-place-expanded}.
+
 
 \section{Derivation of the Generalized-Coordinate Update}
 \label{app:slide15-update-derivation}
@@ -243,50 +234,33 @@ The generalized-coordinate update can be written as
     D\tilde{\mu}_{g}
     =
     -
-    \partial_{\mu_g}\mathcal{F}(y,\mu).
+    \partial_{\tilde\mu_g}\mathcal{F}(y,\mu).
     \label{eq:appendix-slide15-gradient-balance}
 \end{equation}
 The term $D\tilde{\mu}_{g}$ is due to the generalized coordinates. When the true motion equals the belief of the motion, $\dot{\tilde{\mu}}_{g}=D\tilde{\mu}_{g}$, the free-energy gradient should reach zero: $\dot{\tilde{\mu}}_{g}-D\tilde{\mu}_{g}=-\partial_{\mu_g}\mathcal{F}=0$.
 
-Equivalently, the update starts from gradient descent on free energy:
+Which can be rewritten as:
 \begin{equation}
     \dot{\tilde{\mu}}_{g}
     =
     D\tilde{\mu}_{g}
     -
-    \partial_{\mu_g}\mathcal{F}(y,\mu).
+    \partial_{\tilde\mu_g}\mathcal{F}(y,\mu).
     \label{eq:appendix-slide15-start}
 \end{equation}
-The prediction errors are
-\begin{equation}
-    \tilde{\epsilon}_{g}
-    =
-    D\tilde{\mu}_{g}
-    -
-    \tilde{f}(\tilde{\mu}_{g}),
-    \qquad
-    \tilde{\epsilon}_{p}
-    =
-    \tilde{y}
-    -
-    \tilde{g}(\tilde{\mu}_{g}).
-    \label{eq:appendix-slide15-errors}
-\end{equation}
-When differentiating with respect to $\mu$, the log-precision terms in Eq.~\ref{eq:vfe-motion-place-expanded} vanish because the precision terms do not depend on $\mu$. Substituting the prediction-error terms gives
+ Substituting the Free Energy terms with constants, and the respective error terms in equation \ref{eq:prediction-errors}, gives
 \begin{align}
     \dot{\tilde{\mu}}_{g}
     &=
     D\tilde{\mu}_{g}
     -
     \left(
-        -
-        \partial_{\mu_g}\tilde{\epsilon}_{g}^{\top}
+        \partial_{\tilde\mu_g}\tilde{\epsilon}_{g}^{\top}
         \tilde{\Pi}_{g}\tilde{\epsilon}_{g}
         +
-        \partial_{\mu_g}
+        \partial_{\tilde\mu_g}
         \sum_{\mathrm{landmarks}}
         \left(
-            -
             \tilde{\epsilon}_{p}^{\top}
             \tilde{\Pi}_{p}\tilde{\epsilon}_{p}
         \right)
@@ -298,13 +272,13 @@ When differentiating with respect to $\mu$, the log-precision terms in Eq.~\ref{
     \left(
         D
         -
-        \partial_{\mu_g}\tilde{f}(\tilde{\mu}_{g})
+        \partial_{\tilde\mu_g}\tilde{f}(\tilde{\mu}_{g})
     \right)^\top
     \tilde{\Pi}_{g}\tilde{\epsilon}_{g}
     +
     \sum_{\mathrm{landmarks}}
     \left(
-        \partial_{\mu_g}\tilde{g}(\tilde{\mu}_{g})
+        \partial_{\tilde\mu_g}\tilde{g}(\tilde{\mu}_{g})
     \right)^\top
     \tilde{\Pi}_{p}\tilde{\epsilon}_{p}
     \nonumber \\
@@ -314,13 +288,13 @@ When differentiating with respect to $\mu$, the log-precision terms in Eq.~\ref{
     D^\top\tilde{\Pi}_{g}\tilde{\epsilon}_{g}
     +
     \left(
-        \partial_{\mu_g}\tilde{f}(\tilde{\mu}_{g})
+        \partial_{\tilde\mu_g}\tilde{f}(\tilde{\mu}_{g})
     \right)^\top
     \tilde{\Pi}_{g}\tilde{\epsilon}_{g}
     +
     \sum_{\mathrm{landmarks}}
     \left(
-        \partial_{\mu_g}\tilde{g}(\tilde{\mu}_{g})
+        \partial_{\tilde\mu_g}\tilde{g}(\tilde{\mu}_{g})
     \right)^\top
     \tilde{\Pi}_{p}\tilde{\epsilon}_{p}.
     \tag{\ref{eq:slide15-generic-update}}
@@ -372,8 +346,8 @@ With these conventions, the RCS-to-FCS translation used for motion observations 
     \end{bmatrix}
     =
     \begin{bmatrix}
-        \cos\theta & -\sin\theta & 0 \\
-        \sin\theta & \cos\theta & 0 \\
+        \cos\theta_r & -\sin\theta_r & 0 \\
+        \sin\theta_r & \cos\theta_r & 0 \\
         0 & 0 & 1
     \end{bmatrix}
     \begin{bmatrix}
@@ -436,4 +410,41 @@ Because the soccer field and coordinate conventions are known, the corresponding
 \end{equation}
 This Jacobian is the term $\partial_{\mu_g}\tilde{g}(\tilde{\mu}_g)$ in Eq.~\ref{eq:slide15-generic-update}. It propagates landmark prediction errors back to the field-pose belief.
 
+To clarify, $x_r$, $y_r$, and $\theta_r$ are the current belief
+estimates of the robot pose; all transformations and the Jacobian
+above are evaluated using these estimates, without access to the
+actual robot pose.
+
+\FloatBarrier
+
+\section{Tracking Error for Different Landmark Configurations}
+\label{sec:appendix-landmark-tracking}
+
+This appendix provides a more detailed view of the tracking behavior evaluated in Section~\ref{subsec:experiments-visibility-stress}, how landmark availability affects tracking
+error over time. 
+
+
+\begin{figure}[htbp]
+    \centering
+
+    \includegraphics[width=\linewidth,page=1]
+    {figures/paper_lm_dataset_20260918_111044_227495_graph.pdf}\\
+    {\small (a) Absolute $x$-position error}
+
+    \medskip
+
+    \includegraphics[width=\linewidth,page=2]
+    {figures/paper_lm_dataset_20260918_111044_227495_graph.pdf}\\
+    {\small (b) Absolute $y$-position error}
+
+    \medskip
+
+    \includegraphics[width=\linewidth,page=3]
+    {figures/paper_lm_dataset_20260918_111044_227495_graph.pdf}\\
+    {\small (c) Absolute heading error}
+
+    \caption{\scriptsize
+    Each landmark configuration (3: two goals and the middle circle; 5: additionally, the two halfway-line boundary points; 9: additionally, the four corners) is evaluated over 100 trials of 30 seconds. All 100 trials for every landmark configuration use identical initial actual and belief poses and replay the same randomly generated target sequence. The trials use the same noise, dropout, field-of-view, and temporary-obstruction settings as Section~\ref{subsec:experiments-visibility-stress}. Landmark counts describe the available map; the number observed at each timestep may be smaller due to the 110 degrees field-of-view. Panels show absolute errors in (a) $x$ position, (b) $y$ position, and (c) heading. Lines show the mean absolute belief-minus-actual error across trials at each timestep; shaded regions span the 1st to 99th percentiles. Heading error is the absolute wrapped angular difference. Thin red vertical lines indicate activation of the next random target.}
+    \label{fig:landmark-tracking-error}
+\end{figure}
 \FloatBarrier

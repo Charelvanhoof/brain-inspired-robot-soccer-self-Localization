@@ -5,6 +5,7 @@ Although the simulations demonstrate robust tracking in the tested conditions, s
     \item Jochmann et al.~\cite{jochmann_efficient_2012} motivate multi-hypothesis localization for ambiguous RoboCup settings. The present simulations show that tracking with a single belief state is possible, but real-robot testing in match conditions should determine whether a multi-hypothesis active-inference extension is necessary.
     \item The approach relies on reliable landmark detection, which shifts part of the problem to the perception pipeline. However, mature object-detection methods such as YOLO can reliably provide suitable landmark candidates for the inference algorithm.
     \item The soccer field is symmetric, so the robot may need an additional source of unique information to resolve mirror-image pose hypotheses reliably. Possible symmetry-breaking cues include a noisy compass cue, an external landmark outside the field, or an initialization routine.
-    \item The algorithm could be extended with adaptive precision learning. In the present version, precisions are fixed, but active inference provides mechanisms to learn the precision of prediction errors, for example to detect degrading sensors.
+    \item Future work will include benchmarking the proposed approach against Kalman-filter-based localization on a physical robot.
+    \item The algorithm could be extended with adaptive precision learning, active inference provides mechanisms to learn the precision of prediction errors, for example to detect degrading sensors.
     \item The algorithm could be extended to handle different frequencies for different sensory streams, for example accommodating higher-frequency IMU observations and lower-frequency camera-based landmark detections.
 \end{itemize}
