@@ -12,14 +12,8 @@
 !/brain_inspired_self_localisation.pdf
 !/step_core_cpp_interface.txt
 
-# LaTeX paper source and its figures
-!/Paper/
-/Paper/*
-!/Paper/Robot_Soccer_Self_Localization_with_Active_Inference/
-!/Paper/Robot_Soccer_Self_Localization_with_Active_Inference/**
-!/Paper/Robot_Soccer_Self_Localization_with_Active_Inference.pdf
-!/Paper/Robot_Soccer_Self_Localization_with_Active_Inference.zip
-!/Paper/camera_ready_package_Robot_Soccer_Self_Localization.zip
+# Latest paper PDF; the Paper directory stays local.
+!/Robot_Soccer_Self_Localization_with_Active_Inference.pdf
 
 # Datasets used for the published paper results
 !/reports/
