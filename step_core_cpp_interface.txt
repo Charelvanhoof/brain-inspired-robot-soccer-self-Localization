@@ -19,12 +19,42 @@ Call:
 
     response = step_core(request)
 
-The function is defined in:
+For real robot integration, import:
 
-    brain inspired localisation.py
+    brain_inspired_localisation_core
 
-For long-term integration it is recommended to import this from a smaller
-core-only Python module once the code is split.
+The file brain_inspired_localisation_core.py is a copy of the algorithm core
+prepared to run headlessly on a real robot. It does not import pygame,
+matplotlib, or the simulator/UI, keeping the runtime lightweight.
+
+
+Masterdata configuration before the first run
+--------------------------------------------
+Before running the standalone core for the first time, check its masterdata
+against the actual soccer field, robot sensors, and update frequency. Its
+settings are separate from those in the interactive POC file.
+
+Check:
+    - Soccer field length and width, and mapped landmark positions in FCS.
+      All distances must be in centimeters.
+    - Which landmark types the robot can detect, and whether those types match
+      the landmark map and metadata. A type is unique only when it identifies
+      one field landmark.
+    - Landmark association mode and distance gate. Real robot observations
+      provide landmark types, not exact map landmark IDs.
+    - Camera, odometry, and IMU precision settings, and position, heading,
+      velocity, and acceleration learning rates for the update frequency.
+    - Whether the distance precision modifier is enabled, and its reference
+      distance and minimum factor.
+
+Configure these settings before processing observation frames. The landmark
+map is built when the module is imported; changing field dimensions afterward
+does not automatically rebuild it.
+
+Simulation LM PROFILE selections do not configure real robot perception.
+Supply only landmarks actually detected in the current observation frame.
+Passing step_dt_s does not automatically select a masterdata or learning-rate
+preset. No additional step_core request fields are needed for this setup.
 
 
 Request schema
@@ -321,7 +351,7 @@ Conceptual example:
 
     py::scoped_interpreter guard{};
 
-    py::module loc = py::module::import("localisation_core");
+    py::module loc = py::module::import("brain_inspired_localisation_core");
     py::object step_core = loc.attr("step_core");
 
     py::dict request;
