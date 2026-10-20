@@ -1,5 +1,5 @@
 # Code for the Robot_Soccer_Self_Localization_with_Active_Inference
-# Based on version POC V28
+# Based on version POC V29
 import math
 
 
