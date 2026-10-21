@@ -1,0 +1,401 @@
+step_core C++ / pybind11 interface
+==================================
+
+Purpose
+-------
+The Python localization core exposes one C++/pybind11 entrypoint:
+
+    step_core(request)
+
+The C++ robot software should call this once per localization tick. C++ owns the
+control loop, sensor polling, timing, and stored belief state between calls.
+Python processes one supplied observation frame and returns the next belief
+state.
+
+
+Python module entrypoint
+------------------------
+Call:
+
+    response = step_core(request)
+
+For real robot integration, import:
+
+    brain_inspired_localisation_core
+
+The file brain_inspired_localisation_core.py is a copy of the algorithm core
+prepared to run headlessly on a real robot. It does not import pygame,
+matplotlib, or the simulator/UI, keeping the runtime lightweight.
+
+
+Masterdata configuration before the first run
+--------------------------------------------
+Before running the standalone core for the first time, check its masterdata
+against the actual soccer field, robot sensors, and update frequency. Its
+settings are separate from those in the interactive POC file.
+
+Check:
+    - Soccer field length and width, and mapped landmark positions in FCS.
+      All distances must be in centimeters.
+    - Which landmark types the robot can detect, and whether those types match
+      the landmark map and metadata. A type is unique only when it identifies
+      one field landmark.
+    - Landmark association mode and distance gate. Real robot observations
+      provide landmark types, not exact map landmark IDs.
+    - Camera, odometry, and IMU precision settings, and position, heading,
+      velocity, and acceleration learning rates for the update frequency.
+    - Whether the distance precision modifier is enabled, and its reference
+      distance and minimum factor.
+
+Configure these settings before processing observation frames. The landmark
+map is built when the module is imported; changing field dimensions afterward
+does not automatically rebuild it.
+
+Simulation LM PROFILE selections do not configure real robot perception.
+Supply only landmarks actually detected in the current observation frame.
+Passing step_dt_s does not automatically select a masterdata or learning-rate
+preset. No additional step_core request fields are needed for this setup.
+
+
+Request schema
+--------------
+The request is a pybind11/JSON-friendly dictionary:
+
+    {
+        "timestamp": "2026-05-01T13:45:12.345Z",
+
+        "belief_fcs_gc": {
+            "x": [x_cm, x_dot_cm_s, x_ddot_cm_s2],
+            "y": [y_cm, y_dot_cm_s, y_ddot_cm_s2],
+            "theta": [theta_rad, theta_dot_rad_s, theta_ddot_rad_s2]
+        },
+
+        "landmark_observations_rcs": [
+            {
+                "obs_id": "cam_0",
+                "type": "corner",
+                "x_rcs_cm": 120.0,
+                "y_rcs_cm": -40.0
+            }
+        ],
+
+        "motion_observation": {
+            "x_vel_cm_s": 10.0,
+            "y_vel_cm_s": 2.0,
+            "theta_vel_rad_s": 0.05,
+            "x_acc_cm_s2": 30.0,
+            "y_acc_cm_s2": 5.0,
+            "theta_acc_rad_s2": 0.1
+        },
+
+        "algorithm_name": "motion+landmark",
+        "step_dt_s": 0.005
+    }
+
+The first integration target is one fused observation frame per call: landmarks
+and motion observations in the same request are treated as belonging to the same
+timestamp.
+
+
+Required and conditionally required fields
+-----------------------------------------
+belief_fcs_gc:
+    Always required.
+
+    Must contain the keys:
+        x
+        y
+        theta
+
+    Each key must contain at least three numeric values. Current expected shape:
+
+        x     = [position_cm, velocity_cm_s, acceleration_cm_s2]
+        y     = [position_cm, velocity_cm_s, acceleration_cm_s2]
+        theta = [angle_rad, angular_velocity_rad_s, angular_acceleration_rad_s2]
+
+    The returned belief_fcs_gc has the same structure and should be used as the
+    next tick's input belief_fcs_gc. The current internal default order is 2, so
+    make_robot_gc_state(...) produces three values per axis.
+
+motion_observation:
+    Required when algorithm_name is:
+        motion only
+        motion+landmark
+
+    If supplied, Python validates and converts all required motion fields to
+    float at the API boundary.
+
+landmark_observations_rcs:
+    Required for useful landmark inference when algorithm_name is:
+        landmark only
+        motion+landmark
+
+    If omitted, Python treats it as an empty list. It may also be supplied as
+    an empty list if no landmarks are visible.
+    C++ supplies landmark observations as x/y in RCS. Python calculates the
+    internal bearing angle with:
+
+        angle_rad = atan2(y_rcs_cm, x_rcs_cm)
+
+step_dt_s:
+    Always required.
+
+    This is the integration timestep used for the inference update.
+    Either take a fixed dt, eg 0.05 for 20 Hz, or have C++ compute this from
+    frame timestamps:
+
+        step_dt_s = current_timestamp - previous_timestamp
+
+    Python does not calculate this delta internally.
+
+
+Optional fields
+---------------
+timestamp:
+    Optional. This is the timestamp of the complete observation frame. It is
+    used for diagnostics/logging and is not used in the calculation.
+
+    Format:
+        ISO 8601 / RFC 3339 UTC timestamp string with millisecond precision.
+
+    Example:
+        2026-05-01T13:45:12.345Z
+
+    Notes:
+        - The trailing Z means UTC.
+        - Milliseconds are the three digits after the decimal point.
+        - Python treats this value as metadata and echoes it in diagnostics.
+        - The algorithm uses the field step_dt_s in the update step.
+
+algorithm_name:
+    Optional. If omitted, Python uses:
+        motion+landmark
+
+    The default is:
+        motion+landmark
+
+    Valid current values:
+        landmark only
+        motion only
+        motion+landmark
+
+
+Timing model
+------------
+Initial integration model:
+    One step_core(request) call contains all available observations for one
+    timestamp. Landmark and motion observations are treated as one synchronized
+    fused frame.
+
+    C++ owns timestamp history. For each frame, C++ should compute:
+
+        step_dt_s = current_timestamp - previous_timestamp
+
+    and pass both values:
+
+        timestamp = current_timestamp as ISO 8601 / RFC 3339 UTC string
+        step_dt_s = computed delta
+
+    Python treats timestamp as metadata for logging/correlation and uses
+    step_dt_s as the actual inference integration timestep.
+
+Later extension:
+    Sensors may run at different frequencies, for example IMU at a higher rate
+    than vision. In that future design, the API may split observations into
+    separate smaller updates or add per-sensor timestamps. Do not implement that
+    yet for the first integration.
+
+
+Coordinate frames and units
+---------------------------
+belief_fcs_gc:
+    Expressed in FCS, the Field Coordinate System.
+
+FCS:
+    (0, 0) is the center of the field.
+    +X points toward the enemy goal.
+    +Y points to the robot's left when theta = 0.
+    theta = 0 rad points toward the enemy goal.
+    Positive theta rotates to the left.
+
+landmark_observations_rcs:
+    Expressed in RCS, the Robot Coordinate System.
+
+RCS:
+    (0, 0) is the center of the robot.
+    +X points forward from the robot.
+    +Y points left from the robot.
+
+Motion observation:
+    Translational velocity and acceleration are expected in RCS.
+    Angular velocity and angular acceleration are in radians.
+
+Units:
+    Distance: centimeters
+    Time: seconds
+    Angles: radians
+
+
+Landmark observation schema
+---------------------------
+Each landmark observation should contain:
+
+    {
+        "obs_id": "cam_0",
+        "type": "corner",
+        "x_rcs_cm": 120.0,
+        "y_rcs_cm": -40.0
+    }
+
+Required:
+    type
+    x_rcs_cm
+    y_rcs_cm
+
+Optional:
+    obs_id
+
+    If obs_id is omitted, Python assigns:
+        obs_0, obs_1, ...
+
+Current landmark type values:
+    center
+    middle
+    corner
+    goal
+
+Important:
+    Do not send landmark_id from the real robot path. The real robot perception
+    system is expected to identify landmark type, not the exact map landmark.
+    step_core ignores/removes landmark_id at the API boundary if it is present.
+    Do not send angle_rad from the real robot path. Python calculates angle_rad
+    from x_rcs_cm and y_rcs_cm before running the core landmark update.
+
+Association:
+    The POC currently supports these landmark association modes internally:
+        Gated nearest
+        Unique ID
+        Unique direct
+
+    Unique direct is an internal path used when a landmark type maps to one
+    unique field landmark, such as the center point. The real robot path should
+    not depend on Unique ID, because real robot observations should not contain
+    exact map landmark_id values. Use typed observations in RCS and let the
+    Python core associate them to field landmarks.
+
+
+Landmark maps and profiles
+--------------------------
+The current POC defines nine field landmarks in Python masterdata:
+
+    center
+    left_middle
+    right_middle
+    corner_TR
+    corner_TL
+    corner_BR
+    corner_BL
+    goal_opponent
+    goal_own
+
+The simulator can restrict generated observations through landmark scenario
+profiles:
+
+    9 = all landmarks
+    2 = goal_opponent, goal_own
+    5 = goal_opponent, goal_own, center, left_middle, right_middle
+
+These profiles belong to the simulation/reporting layer. They do not add a
+field to the step_core request. Real robot integration supplies the observations
+that were actually seen in the current frame.
+
+
+Response schema
+---------------
+step_core returns:
+
+    {
+        "belief_fcs_gc": {
+            "x": [...],
+            "y": [...],
+            "theta": [...]
+        },
+        "diagnostics": {
+            "timestamp": ...,
+            "step_dt_s": ...,
+            "free_energy": ...,
+            "motion_free_energy": ...,
+            "landmark_free_energy": ...,
+            "motion_terms": ...,
+            "y_obs": ...,
+            "y_hat": ...
+        }
+    }
+
+The C++ robot software should store:
+
+    response["belief_fcs_gc"]
+
+and use it as the next request's belief_fcs_gc.
+
+
+C++ / pybind11 integration sketch
+---------------------------------
+Initialize Python once at program startup, import the module once, and cache
+the step_core function. Do not initialize Python every control tick.
+
+Conceptual example:
+
+    #include <pybind11/embed.h>
+    namespace py = pybind11;
+
+    py::scoped_interpreter guard{};
+
+    py::module loc = py::module::import("brain_inspired_localisation_core");
+    py::object step_core = loc.attr("step_core");
+
+    py::dict request;
+    request["belief_fcs_gc"] = belief;
+    request["landmark_observations_rcs"] = landmarks;
+    request["motion_observation"] = motion;
+    request["algorithm_name"] = "motion+landmark";
+    request["step_dt_s"] = 0.005;
+    request["timestamp"] = timestamp_iso8601_utc;
+
+    py::dict response = step_core(request).cast<py::dict>();
+    py::dict next_belief = response["belief_fcs_gc"].cast<py::dict>();
+
+
+Runtime responsibilities
+------------------------
+C++ should:
+    - Own the real-time loop.
+    - Read sensors.
+    - Maintain previous/current frame timestamps.
+    - Compute step_dt_s from the timestamp delta.
+    - Build the request dictionary.
+    - Call step_core(request).
+    - Store response["belief_fcs_gc"] for the next tick.
+    - Decide how much diagnostics to log.
+    - Handle exceptions, timeouts, and watchdog behavior.
+
+Python core should:
+    - Process one observation frame.
+    - Return the next generalized-coordinate belief state.
+    - Not poll sensors.
+    - Not run the control loop.
+    - Not call simulation_inference_step or run_experiment for real robot data.
+
+
+Important notes
+---------------
+- step_core shields the Python core from external mutable request objects by
+  copying the incoming belief_fcs_gc, landmark observations, and motion
+  observation values before inference.
+- The input request belief_fcs_gc is not mutated.
+- Feed the returned belief_fcs_gc into the next call.
+- The response belief state is the generalized-coordinate state, not a
+  pose-only view.
+- Keep landmark and motion observation units consistent. Most bad localization
+  behavior at the integration boundary will come from wrong frame, wrong sign,
+  degrees instead of radians, or meters instead of centimeters.

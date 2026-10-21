@@ -1,0 +1,34 @@
+# Start with a small, explicit set of version-controlled files.
+# Everything else stays local until it is deliberately added below.
+/*
+!/.gitignore
+
+# V1 IWAI archive; private paper sources and experiments stay local.
+!/Robot_Soccer_Self_Localization_with_Active_Inference/
+/Robot_Soccer_Self_Localization_with_Active_Inference/Paper/
+
+# Main project files
+!/README.txt
+!/brain inspired localisation.py
+!/brain_inspired_localisation_core.py
+!/global_pose_initialization.py
+!/global_pose_initialization.md
+!/test_global_pose_initialization.py
+!/brain_inspired_self_localisation.pdf
+!/step_core_cpp_interface.txt
+
+# Latest paper PDF; the Paper directory stays local.
+!/Robot_Soccer_Self_Localization_with_Active_Inference.pdf
+
+# Ignore generated LaTeX build files inside the included paper directory.
+Robot_Soccer_Self_Localization_with_Active_Inference/*.aux
+Robot_Soccer_Self_Localization_with_Active_Inference/*.bbl
+Robot_Soccer_Self_Localization_with_Active_Inference/*.bcf
+Robot_Soccer_Self_Localization_with_Active_Inference/*.blg
+Robot_Soccer_Self_Localization_with_Active_Inference/*.fdb_latexmk
+Robot_Soccer_Self_Localization_with_Active_Inference/*.fls
+Robot_Soccer_Self_Localization_with_Active_Inference/*.log
+Robot_Soccer_Self_Localization_with_Active_Inference/*.out
+Robot_Soccer_Self_Localization_with_Active_Inference/*.run.xml
+Robot_Soccer_Self_Localization_with_Active_Inference/*.synctex.gz
+Robot_Soccer_Self_Localization_with_Active_Inference/*.toc
