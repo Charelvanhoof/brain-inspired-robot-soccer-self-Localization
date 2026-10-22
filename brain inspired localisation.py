@@ -93,7 +93,7 @@ DATA_ASSOCIATION_ALGORITHM_NAMES = [
     DATA_ASSOCIATION_GATED_NEAREST_NAME,
     DATA_ASSOCIATION_UNIQUE_ID_NAME,
 ]
-ACTIVE_DATA_ASSOCIATION_NAME = DATA_ASSOCIATION_UNIQUE_ID_NAME
+ACTIVE_DATA_ASSOCIATION_NAME = DATA_ASSOCIATION_GATED_NEAREST_NAME
 LANDMARK_ASSOCIATION_GATE_CM = 1000.0
 GENERALIZED_COORDINATE_ORDER = 2
 DISTANCE_PRECISION_REF_CM = 600.0
@@ -1625,6 +1625,7 @@ def run_experiment(
     until_convergence=False,
     step_callback=None,
     callback_interval=20,
+    stop_on_symmetrical_convergence=False,
 ):
     # Input:
     #   robots: dict with actual and belief robot states
@@ -1633,6 +1634,7 @@ def run_experiment(
     #   until_convergence: whether to stop early once the belief converges to the actual pose
     #   step_callback: optional callback invoked during the run for UI refresh / interruption handling
     #   callback_interval: callback cadence in steps
+    #   stop_on_symmetrical_convergence: convergence tests may also stop at the rotated solution
     # Output:
     #   history: list of per-step experiment snapshots for reporting and plotting
     # Function:
@@ -1643,6 +1645,7 @@ def run_experiment(
     history = []
     settings = experiment_settings(algorithm_name)
     convergence_hits = 0
+    symmetrical_hits = 0
 
     for k in range(1, max_steps + 1):
         y_obs_map, yhat_map, y_motion_obs, F = simulation_inference_step(robots, algorithm_name)
@@ -1670,6 +1673,14 @@ def run_experiment(
                     break
             else:
                 convergence_hits = 0
+
+            if stop_on_symmetrical_convergence:
+                if pose_symmetrically_converged(history[-1]["actual_pose"], history[-1]["belief_pose"]):
+                    symmetrical_hits += 1
+                    if symmetrical_hits >= CONV_REQUIRED_SEQUENTIAL_HITS:
+                        break
+                else:
+                    symmetrical_hits = 0
 
     return history
 
@@ -2884,16 +2895,31 @@ def plot_masterdata_profile_regression_report(report):
     return pdf_path
 
 
-def history_has_sequential_convergence(history):
+def pose_symmetrically_converged(actual_pose, belief_pose):
+    symmetrical_pose = {
+        "x_cm": -actual_pose["x_cm"],
+        "y_cm": -actual_pose["y_cm"],
+        "theta_rad": wrap_rad(actual_pose["theta_rad"] + math.pi),
+    }
+    return pose_converged_ros(
+        symmetrical_pose, belief_pose, CONV_TOL_X_CM, CONV_TOL_Y_CM, CONV_TOL_ANGLE_RAD,
+    )
+
+
+def history_has_sequential_convergence(history, symmetrical=False):
     convergence_hits = 0
     for record in history:
-        if pose_converged_ros(
-            record["actual_pose"],
-            record["belief_pose"],
-            CONV_TOL_X_CM,
-            CONV_TOL_Y_CM,
-            CONV_TOL_ANGLE_RAD,
-        ):
+        if symmetrical:
+            matches = pose_symmetrically_converged(record["actual_pose"], record["belief_pose"])
+        else:
+            matches = pose_converged_ros(
+                record["actual_pose"],
+                record["belief_pose"],
+                CONV_TOL_X_CM,
+                CONV_TOL_Y_CM,
+                CONV_TOL_ANGLE_RAD,
+            )
+        if matches:
             convergence_hits += 1
             if convergence_hits >= CONV_REQUIRED_SEQUENTIAL_HITS:
                 return True
@@ -2921,16 +2947,6 @@ def percentile_step(step_counts, percentile):
     return sorted_steps[index]
 
 
-def sampled_history_for_report(history, max_points=240):
-    if len(history) <= max_points:
-        return list(history)
-    stride = max(1, math.ceil(len(history) / max_points))
-    sampled = history[::stride]
-    if sampled[-1] is not history[-1]:
-        sampled.append(history[-1])
-    return sampled
-
-
 def run_converge_test(
     robots,
     algorithm_name,
@@ -2943,6 +2959,7 @@ def run_converge_test(
     stop_check=None,
 ):
     converged = 0
+    non_converged_symmetrical = 0
     non_converged = 0
     failures = []
     last_history = []
@@ -2995,6 +3012,7 @@ def run_converge_test(
             algorithm_name,
             max_steps=INFER_STEPS_MAX,
             until_convergence=True,
+            stop_on_symmetrical_convergence=True,
             step_callback=(lambda: False if stop_check is not None and stop_check() else None) if stop_check is not None else None,
             callback_interval=25,
         )
@@ -3010,12 +3028,17 @@ def run_converge_test(
             converged += 1
             converged_steps.append(steps_taken)
         else:
-            non_converged += 1
+            symmetrical = history_has_sequential_convergence(history, symmetrical=True)
+            if symmetrical:
+                non_converged_symmetrical += 1
+            else:
+                non_converged += 1
             if collect_failures:
                 actual_end = robot_pose_view(robots["actual"])
                 belief_end = robot_pose_view(robots["belief"])
                 visible_landmark_ids = sorted(obs["obs_id"] for obs in simulation_sense_landmarks(robots["actual"], active_simulation_landmarks()))
                 failures.append({
+                    "symmetrical": symmetrical,
                     "actual_start": start_actual,
                     "belief_start": start_belief,
                     "actual_end": actual_end,
@@ -3027,7 +3050,7 @@ def run_converge_test(
                 })
 
         if progress_callback is not None:
-            keep_running = progress_callback(i + 1, runs, converged, non_converged)
+            keep_running = progress_callback(i + 1, runs, converged, non_converged + non_converged_symmetrical)
             if keep_running is False:
                 stopped = True
                 break
@@ -3040,6 +3063,7 @@ def run_converge_test(
     return {
         "runs": runs,
         "converged": converged,
+        "non_converged_symmetrical": non_converged_symmetrical,
         "non_converged": non_converged,
         "trial_steps": trial_steps,
         "converged_steps": converged_steps,
@@ -3067,13 +3091,22 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     converged = report["converged"]
+    non_converged_symmetrical = report.get("non_converged_symmetrical", 0)
     non_converged = report["non_converged"]
     mean_steps = report.get("mean_steps_to_converge")
     sd_steps = report.get("sd_steps_to_converge")
     max_steps = report.get("max_steps_to_converge")
     p95_steps = report.get("p95_steps_to_converge")
     p99_steps = report.get("p99_steps_to_converge")
-    failures = report["failures"]
+    failures = [fail for fail in report["failures"] if not fail.get("symmetrical", False)]
+    counts_text = (
+        f"Converged: {converged}    Non-converged-symmetrical: {non_converged_symmetrical}    "
+        f"Non-converged: {non_converged}"
+    )
+    convergence_condition_text = (
+        f"Convergence condition: |dx|<={CONV_TOL_X_CM:.1f} cm   |dy|<={CONV_TOL_Y_CM:.1f} cm   "
+        f"|dtheta|<={CONV_TOL_ANGLE_RAD:.4f} rad   sequential hits>={CONV_REQUIRED_SEQUENTIAL_HITS}"
+    )
     last_history = report.get("last_history", [])
     if last_history:
         settings = last_history[0].get("settings", experiment_settings(algorithm_name))
@@ -3092,6 +3125,10 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
             start_condition_text = f"Start condition: moving actual robot on demo path '{demo_path_name}'; belief dx,dy uniform +/-50 cm; dtheta uniform +/-20 deg"
         else:
             start_condition_text = f"Start condition: moving actual robot on demo path '{demo_path_name}'; actual and belief independently random near field"
+        start_condition_text += (
+            f"\nBall position (FCS): x={report['look_target_x_cm']:.1f} cm   "
+            f"y={report['look_target_y_cm']:.1f} cm"
+        )
     elif start_mode == "nearby":
         mode_label = "Landmark Converge Nearby"
         start_condition_text = "Start condition: landmark-only static actual pose; belief dx,dy uniform +/-50 cm; dtheta uniform +/-20 deg"
@@ -3118,9 +3155,9 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
         noise_text = "Noise: NO"
 
     if mean_steps is None or sd_steps is None or max_steps is None or p95_steps is None or p99_steps is None:
-        step_stats_text = "Steps to converge: n/a"
+        step_stats_text = "Steps to converge (converged cases only): n/a"
     else:
-        step_stats_text = f"Steps to converge: mean={mean_steps:.1f}   sd={sd_steps:.1f}   p95={p95_steps}   p99={p99_steps}   max={max_steps}   n={converged}"
+        step_stats_text = f"Steps to converge (converged cases only): mean={mean_steps:.1f}   sd={sd_steps:.1f}   p95={p95_steps}   p99={p99_steps}   max={max_steps}   n={converged}"
 
     halfW = FIELD_WIDTH_CM / 2
     halfL = FIELD_LENGTH_CM / 2
@@ -3135,25 +3172,25 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
     ) = simulation_settings_report_lines(settings)
 
     def draw_field_snapshot(ax, actual_pose, belief_pose, title, history=None):
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=7)
         ax.set_xlim(halfW + 80, -halfW - 80)
         ax.set_ylim(-halfL - 80, halfL + 80)
         ax.set_aspect("equal", adjustable="box")
 
-        rect = Rectangle((halfW, -halfL), -FIELD_WIDTH_CM, FIELD_LENGTH_CM, fill=False, linewidth=1.8)
+        rect = Rectangle((halfW, -halfL), -FIELD_WIDTH_CM, FIELD_LENGTH_CM, fill=False, linewidth=0.9)
         ax.add_patch(rect)
-        ax.plot([halfW, -halfW], [0, 0], linewidth=1.4)
+        ax.plot([halfW, -halfW], [0, 0], linewidth=0.7)
 
         if history:
             actual_y = [record["actual_pose"]["y_cm"] for record in history]
             actual_x = [record["actual_pose"]["x_cm"] for record in history]
             belief_y = [record["belief_pose"]["y_cm"] for record in history]
             belief_x = [record["belief_pose"]["x_cm"] for record in history]
-            ax.plot(actual_y, actual_x, color="green", linewidth=1.2, alpha=0.75)
-            ax.plot(belief_y, belief_x, color="red", linewidth=1.2, alpha=0.75)
+            ax.plot(actual_y, actual_x, color="green", linewidth=0.6, alpha=0.75)
+            ax.plot(belief_y, belief_x, color="red", linewidth=0.6, alpha=0.75)
 
-        ax.scatter([actual_pose["y_cm"]], [actual_pose["x_cm"]], marker="x", s=110, color="green", linewidths=2.0)
-        ax.scatter([belief_pose["y_cm"]], [belief_pose["x_cm"]], marker="o", s=120, facecolors="none", edgecolors="red", linewidths=2.0)
+        ax.scatter([actual_pose["y_cm"]], [actual_pose["x_cm"]], marker="o", s=32, facecolors="none", edgecolors="green", linewidths=1.0)
+        ax.scatter([belief_pose["y_cm"]], [belief_pose["x_cm"]], marker="o", s=32, facecolors="none", edgecolors="red", linewidths=1.0)
 
         for pose, color in [(actual_pose, "green"), (belief_pose, "red")]:
             dx = 80 * math.sin(pose["theta_rad"])
@@ -3167,25 +3204,31 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                 head_length=36,
                 length_includes_head=True,
                 color=color,
-                linewidth=1.6,
+                linewidth=0.8,
             )
 
         ax.set_xticks([])
         ax.set_yticks([])
 
+    report_rows = failures_per_page
+    overview_header_height = 4.0
+    if start_mode in {"dynamic_demo_random", "dynamic_demo_nearby"}:
+        overview_header_height += 0.3
+
     with PdfPages(pdf_path) as pdf:
         for page_idx in range(total_pages):
             page_failures = failures[page_idx * failures_per_page:(page_idx + 1) * failures_per_page]
-            n_rows = max(1, len(page_failures))
+            n_rows = report_rows
             is_first_page = page_idx == 0
-            header_height = 2.9 if is_first_page else 1.2
+            header_height = overview_header_height if is_first_page else 0.35
 
-            fig = plt.figure(figsize=(16, 3.2 + header_height + 6.8 * n_rows))
+            first_case_row = 2 if is_first_page else 1
+            fig = plt.figure(figsize=(210 / 25.4, 297 / 25.4))
             gs = GridSpec(
-                n_rows + 1,
+                n_rows + first_case_row,
                 3,
                 figure=fig,
-                height_ratios=[header_height] + [5.4] * n_rows,
+                height_ratios=[header_height] + ([0.7] if is_first_page else []) + [5.4] * n_rows,
                 width_ratios=[2.5, 2.5, 3.2],
             )
             fig.subplots_adjust(left=0.04, right=0.98, top=0.97, bottom=0.04, hspace=0.32, wspace=0.18)
@@ -3195,7 +3238,8 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
             if is_first_page:
                 header = (
                     f"{mode_label}   |   Time: {timestamp}   |   Algorithm: {algorithm_name}   |   Page {page_idx + 1}/{total_pages}\n"
-                    f"Converged: {converged}    Non-converged: {non_converged}\n"
+                    f"{counts_text}\n"
+                    f"{convergence_condition_text}\n"
                     f"{step_stats_text}\n"
                     f"{start_condition_text}\n"
                     f"{noise_text}\n"
@@ -3206,14 +3250,10 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                     f"DT={settings['dt']:.4f}\n"
                     f"{precision_report_row(settings)}\n"
                     f"{precision_distance_modifier_report_row(settings)}\n"
-                    f"{learning_rate_report_row(settings)}\n"
-                    f"Convergence condition: |dx|<={CONV_TOL_X_CM:.1f} cm   |dy|<={CONV_TOL_Y_CM:.1f} cm   |dtheta|<={CONV_TOL_ANGLE_RAD:.4f} rad   sequential hits>={CONV_REQUIRED_SEQUENTIAL_HITS}"
+                    f"{learning_rate_report_row(settings)}"
                 )
             else:
-                header = (
-                    f"{mode_label}   |   Algorithm: {algorithm_name}   |   Page {page_idx + 1}/{total_pages}\n"
-                    f"Converged: {converged}    Non-converged: {non_converged}   |   {step_stats_text}"
-                )
+                header = f"{mode_label}   |   Time: {timestamp}"
             header = "\n".join(
                 textwrap.fill(
                     line,
@@ -3223,12 +3263,18 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                 )
                 for line in header.splitlines()
             )
-            ax0.text(0.01, 0.98, header, fontsize=12, family="monospace", va="top")
+            ax0.text(0.01, 0.98, header, fontsize=6.5 if is_first_page else 7, family="monospace", va="top")
+
+            if is_first_page:
+                ax_section = fig.add_subplot(gs[1, :])
+                ax_section.axis("off")
+                ax_section.text(0.01, 0.95, "Failure plots", fontsize=10, fontweight="bold", va="top")
+                ax_section.text(0.01, 0.40, "Actual = green   |   Belief = red", fontsize=7, va="top")
 
             if not page_failures:
-                ax_no = fig.add_subplot(gs[1, :])
+                ax_no = fig.add_subplot(gs[first_case_row, :])
                 ax_no.axis("off")
-                ax_no.text(0.01, 0.98, "No failed cases.", fontsize=12, family="monospace", va="top")
+                ax_no.text(0.01, 0.98, "No non-converged cases to display.", fontsize=7, family="monospace", va="top")
             else:
                 for row_idx, fail in enumerate(page_failures, start=1):
                     fail_number = page_idx * failures_per_page + row_idx
@@ -3236,16 +3282,22 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                     b0 = fail["belief_start"]
                     a1 = fail["actual_end"]
                     b1 = fail["belief_end"]
-                    ax_start = fig.add_subplot(gs[row_idx, 0])
+                    case_row = row_idx + first_case_row - 1
+                    ax_start = fig.add_subplot(gs[case_row, 0])
                     draw_field_snapshot(ax_start, a0, b0, f"Fail {fail_number} START")
 
-                    ax_end = fig.add_subplot(gs[row_idx, 1])
-                    draw_field_snapshot(ax_end, a1, b1, f"Fail {fail_number} END", history=fail.get("path_history"))
+                    ax_end = fig.add_subplot(gs[case_row, 1])
+                    path_history = fail.get("path_history")
+                    end_title = f"Fail {fail_number} END"
+                    if path_history:
+                        end_title += f" (last {len(path_history)} steps)"
+                    draw_field_snapshot(ax_end, a1, b1, end_title, history=path_history)
 
-                    ax_txt = fig.add_subplot(gs[row_idx, 2])
+                    ax_txt = fig.add_subplot(gs[case_row, 2])
                     ax_txt.axis("off")
                     txt = (
                         f"Fail {fail_number}\n"
+                        f"Non-converged\n"
                         f"{format_ros_pose_line('Start Actual', a0, decimals=0, angle_decimals=3)}"
                         f"   outside={fail['actual_start_outside']}\n"
                         f"{format_ros_pose_line('Start Belief', b0, decimals=0, angle_decimals=3)}"
@@ -3254,7 +3306,11 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                         f"{format_ros_pose_line('End   Actual', a1, decimals=0, angle_decimals=3)}\n"
                         f"{format_ros_pose_line('End   Belief', b1, decimals=0, angle_decimals=3)}"
                     )
-                    ax_txt.text(0.01, 0.98, txt, fontsize=12, family="monospace", va="top")
+                    txt = "\n".join(
+                        textwrap.fill(line, width=50, break_long_words=False, break_on_hyphens=False)
+                        for line in txt.splitlines()
+                    )
+                    ax_txt.text(0.01, 0.98, txt, fontsize=6, family="monospace", va="top")
 
             pdf.savefig(fig)
             plt.close(fig)
@@ -4422,6 +4478,7 @@ def run_dynamic_converge_test(
     stop_check=None,
 ):
     converged = 0
+    non_converged_symmetrical = 0
     non_converged = 0
     failures = []
     last_history = []
@@ -4481,6 +4538,7 @@ def run_dynamic_converge_test(
 
         history = []
         convergence_hits = 0
+        symmetrical_hits = 0
         for k in range(1, INFER_STEPS_MAX + 1):
             if stop_check is not None and stop_check():
                 stopped = True
@@ -4503,6 +4561,13 @@ def run_dynamic_converge_test(
             else:
                 convergence_hits = 0
 
+            if pose_symmetrically_converged(history[-1]["actual_pose"], history[-1]["belief_pose"]):
+                symmetrical_hits += 1
+                if symmetrical_hits >= CONV_REQUIRED_SEQUENTIAL_HITS:
+                    break
+            else:
+                symmetrical_hits = 0
+
         last_history = history
         steps_taken = len(history)
         trial_steps.append(steps_taken)
@@ -4514,11 +4579,16 @@ def run_dynamic_converge_test(
             converged += 1
             converged_steps.append(steps_taken)
         else:
-            non_converged += 1
+            symmetrical = history_has_sequential_convergence(history, symmetrical=True)
+            if symmetrical:
+                non_converged_symmetrical += 1
+            else:
+                non_converged += 1
             actual_end = robot_pose_view(robots["actual"])
             belief_end = robot_pose_view(robots["belief"])
             visible_landmark_ids = sorted(obs["obs_id"] for obs in simulation_sense_landmarks(robots["actual"], active_simulation_landmarks()))
             failures.append({
+                "symmetrical": symmetrical,
                 "actual_start": start_actual,
                 "belief_start": start_belief,
                 "actual_end": actual_end,
@@ -4527,11 +4597,11 @@ def run_dynamic_converge_test(
                 "belief_start_outside": is_pose_outside_field(start_belief),
                 "visible_landmark_count": len(visible_landmark_ids),
                 "visible_landmark_ids": visible_landmark_ids,
-                "path_history": sampled_history_for_report(history),
+                "path_history": history[-300:],
             })
 
         if progress_callback is not None:
-            keep_running = progress_callback(i + 1, runs, converged, non_converged)
+            keep_running = progress_callback(i + 1, runs, converged, non_converged + non_converged_symmetrical)
             if keep_running is False:
                 stopped = True
                 break
@@ -4543,6 +4613,7 @@ def run_dynamic_converge_test(
     return {
         "runs": runs,
         "converged": converged,
+        "non_converged_symmetrical": non_converged_symmetrical,
         "non_converged": non_converged,
         "trial_steps": trial_steps,
         "converged_steps": converged_steps,
@@ -4555,6 +4626,8 @@ def run_dynamic_converge_test(
         "last_history": last_history,
         "start_mode": f"dynamic_demo_{start_mode}",
         "demo_path_name": demo_path_name,
+        "look_target_x_cm": look_target_x_cm,
+        "look_target_y_cm": look_target_y_cm,
         "stopped": stopped,
     }
 
