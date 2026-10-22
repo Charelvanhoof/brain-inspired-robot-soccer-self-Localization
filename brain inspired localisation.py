@@ -220,6 +220,10 @@ def make_landmarks():
         "corner_BL": (-halfL, halfW),
         "goal_opponent": (halfL, 0.0),
         "goal_own": (-halfL, 0.0),
+        # Recognized poster 3 m behind the enemy goal line, 3 m to the left of the goal centre.
+        "poster1": (halfL + 300.0, 300.0),
+        # A different recognized poster 40 m behind the enemy goal line, with the same left offset.
+        "poster2": (halfL + 4000.0, 300.0),
     }
 
 
@@ -238,6 +242,22 @@ LANDMARK_SCENARIO_PROFILES = [
             "corner_BL",
             "goal_opponent",
             "goal_own",
+        ],
+    },
+    {
+        "name": "9+1clo",
+        "landmark_ids": [
+            "center", "left_middle", "right_middle",
+            "corner_TR", "corner_TL", "corner_BR", "corner_BL",
+            "goal_opponent", "goal_own", "poster1",
+        ],
+    },
+    {
+        "name": "9+1far",
+        "landmark_ids": [
+            "center", "left_middle", "right_middle",
+            "corner_TR", "corner_TL", "corner_BR", "corner_BL",
+            "goal_opponent", "goal_own", "poster2",
         ],
     },
     {
@@ -287,6 +307,8 @@ def make_landmark_metadata():
         "corner_BL": {"type": "corner", "unique": False},
         "goal_opponent": {"type": "goal", "unique": False},
         "goal_own": {"type": "goal", "unique": False},
+        "poster1": {"type": "poster1", "unique": True},
+        "poster2": {"type": "poster2", "unique": True},
     }
 
 
@@ -5171,7 +5193,7 @@ def main():
         (
             "landmark_scenario_profile",
             landmark_scenario_profile_btn,
-            lambda: f"Landmark scenario profile: {ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME} active simulated landmarks",
+            lambda: f"Landmark scenario profile: {ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME} ({len(active_simulation_landmarks())} active simulated landmarks)",
         ),
         (
             "noise_toggle",

@@ -67,6 +67,14 @@ python ".\brain inspired localisation.py"
   Switching this option reapplies the selected frequency's preset, including
   its learning rates, replacing any manual adjustments to those settings.
 - Use `LM PROFILE` to cycle simulated landmark sets:
+  - `9+1far`: the nine field landmarks plus uniquely recognized `poster2` at
+    FCS (4900, 300) cm, 40 m behind the enemy goal line with the same left
+    offset as poster1. Only poster2 is observed in this profile.
+  - `9+1clo`: the nine field landmarks plus a uniquely recognized `poster1` at
+    FCS (1200, 300) cm, 3 m behind the enemy goal line and 3 m to the left of
+    the goal centre (looking toward the enemy goal). The poster
+    supplies asymmetric evidence when observed and lies outside the normal GUI
+    field view. The usual FoV, noise, dropout, and obstruction settings apply.
   - `9`: all landmarks
   - `2`: both goals
   - `1`: center
