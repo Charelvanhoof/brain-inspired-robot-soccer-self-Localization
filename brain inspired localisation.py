@@ -1,10 +1,21 @@
 # Code for the Robot_Soccer_Self_Localization_with_Active_Inference
 # Based on version POC V29
+import json
+import datetime
+import brain_inspired_localisation_core as core
 import math
+from pathlib import Path
+from copy import deepcopy
 import random
 import sys
 import textwrap
 import types
+
+from brain_inspired_localisation_core import (
+    wrap_rad, make_robot_gc_state, scalar_2_gc, gc_2_scalar, obs_list_to_map,
+    landmark_fcs_2_rcs, vel_fcs_2_rcs, acc_fcs_2_rcs, vel_rcs_2_fcs, acc_rcs_2_fcs,
+    landmark_is_within_viewing_angle, calculate_angle, algorithm_uses_motion, algorithm_uses_landmarks,
+)
 
 try:
     import matplotlib.pyplot as plt
@@ -88,14 +99,7 @@ FUSED_MOTION_LANDMARK_ALGORITHM_NAME = "motion+landmark"
 ACTIVE_ALGORITHM_NAME = FUSED_MOTION_LANDMARK_ALGORITHM_NAME
 DATA_ASSOCIATION_GATED_NEAREST_NAME = "Gated nearest"
 DATA_ASSOCIATION_UNIQUE_ID_NAME = "Unique ID"
-DATA_ASSOCIATION_UNIQUE_DIRECT_NAME = "Unique direct"
-DATA_ASSOCIATION_ALGORITHM_NAMES = [
-    DATA_ASSOCIATION_GATED_NEAREST_NAME,
-    DATA_ASSOCIATION_UNIQUE_ID_NAME,
-]
-ACTIVE_DATA_ASSOCIATION_NAME = DATA_ASSOCIATION_GATED_NEAREST_NAME
 LANDMARK_ASSOCIATION_GATE_CM = 1000.0
-GENERALIZED_COORDINATE_ORDER = 2
 DISTANCE_PRECISION_REF_CM = 600.0
 DISTANCE_PRECISION_MIN_FACTOR = 0.15
 PRECISION_DISTANCE_MODIFIER_ENABLED = True
@@ -207,159 +211,56 @@ LANDMARK_OBSTRUCTION_REMAINING_S = {}
 # =========================
 # MASTERDATA: Landmarks in FCS (cm)
 # =========================
-def make_landmarks():
-    halfL = FIELD_LENGTH_CM / 2
-    halfW = FIELD_WIDTH_CM / 2
-    return {
-        "center": (0.0, 0.0),
-        "left_middle": (0.0, halfW),
-        "right_middle": (0.0, -halfW),
-        "corner_TR": (halfL, -halfW),
-        "corner_TL": (halfL, halfW),
-        "corner_BR": (-halfL, -halfW),
-        "corner_BL": (-halfL, halfW),
-        "goal_opponent": (halfL, 0.0),
-        "goal_own": (-halfL, 0.0),
-        # Recognized poster 3 m behind the enemy goal line, 3 m to the left of the goal centre.
-        "poster1": (halfL + 300.0, 300.0),
-        # A different recognized poster 40 m behind the enemy goal line, with the same left offset.
-        "poster2": (halfL + 4000.0, 300.0),
-    }
-
-
-LANDMARKS = make_landmarks()
-
-LANDMARK_SCENARIO_PROFILES = [
-    {
-        "name": "9",
-        "landmark_ids": [
-            "center",
-            "left_middle",
-            "right_middle",
-            "corner_TR",
-            "corner_TL",
-            "corner_BR",
-            "corner_BL",
-            "goal_opponent",
-            "goal_own",
-        ],
-    },
-    {
-        "name": "9+1clo",
-        "landmark_ids": [
-            "center", "left_middle", "right_middle",
-            "corner_TR", "corner_TL", "corner_BR", "corner_BL",
-            "goal_opponent", "goal_own", "poster1",
-        ],
-    },
-    {
-        "name": "9+1far",
-        "landmark_ids": [
-            "center", "left_middle", "right_middle",
-            "corner_TR", "corner_TL", "corner_BR", "corner_BL",
-            "goal_opponent", "goal_own", "poster2",
-        ],
-    },
-    {
-        "name": "2",
-        "landmark_ids": [
-            "goal_opponent",
-            "goal_own",
-        ],
-    },
-    {
-        "name": "1",
-        "landmark_ids": [
-            "center",
-        ],
-    },
-    {
-        "name": "3",
-        "landmark_ids": [
-            "center",
-            "goal_opponent",
-            "goal_own",
-        ],
-    },
-    {
-        "name": "5",
-        "landmark_ids": [
-            "goal_opponent",
-            "goal_own",
-            "center",
-            "left_middle",
-            "right_middle",
-        ],
-    },
-]
+# Each profile contains its complete map and recognition names.
+LANDMARK_SCENARIO_PROFILES = core.LANDMARK_SCENARIO_PROFILES
 ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = LANDMARK_SCENARIO_PROFILES[0]["name"]
-PAPER_LM_PROFILE_NAMES = ("1", "2", "3", "5", "9")
-
-
-def make_landmark_metadata():
-    return {
-        "center": {"type": "center", "unique": True},
-        "left_middle": {"type": "middle", "unique": False},
-        "right_middle": {"type": "middle", "unique": False},
-        "corner_TR": {"type": "corner", "unique": False},
-        "corner_TL": {"type": "corner", "unique": False},
-        "corner_BR": {"type": "corner", "unique": False},
-        "corner_BL": {"type": "corner", "unique": False},
-        "goal_opponent": {"type": "goal", "unique": False},
-        "goal_own": {"type": "goal", "unique": False},
-        "poster1": {"type": "poster1", "unique": True},
-        "poster2": {"type": "poster2", "unique": True},
-    }
-
-
-LANDMARK_METADATA = make_landmark_metadata()
 
 
 def landmark_scenario_profile_by_name(profile_name):
     for profile in LANDMARK_SCENARIO_PROFILES:
         if profile["name"] == profile_name:
             return profile
-    raise ValueError(f"Unknown landmark scenario profile: {profile_name}")
+    raise ValueError(f"Unknown landmark profile: {profile_name}")
 
 
 def active_landmark_scenario_profile():
     return landmark_scenario_profile_by_name(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME)
 
 
+def active_association_name():
+    return core.landmark_profile_association_name(active_landmark_scenario_profile())
+
+
+def configured_association_names():
+    return list(dict.fromkeys(core.landmark_profile_association_name(profile) for profile in LANDMARK_SCENARIO_PROFILES))
+
+
 def active_simulation_landmarks():
-    active_ids = set(active_landmark_scenario_profile()["landmark_ids"])
-    return {
-        landmark_id: position
-        for landmark_id, position in LANDMARKS.items()
-        if landmark_id in active_ids
-    }
+    return {str(index): (row["x_cm"], row["y_cm"])
+            for index, row in enumerate(active_landmark_scenario_profile()["landmarks"])}
+
+
+def select_association_profile(association_name):
+    """Legacy headless-export option: select a profile with the requested name ambiguity."""
+    global ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    shape = lambda profile: [(row["type"], row["x_cm"], row["y_cm"]) for row in profile["landmarks"]]
+    current = active_landmark_scenario_profile()
+    candidates = [profile for profile in LANDMARK_SCENARIO_PROFILES if core.landmark_profile_association_name(profile) == association_name]
+    if not candidates:
+        raise ValueError(f"No {association_name!r} landmark profile configured")
+    selected = next((profile for profile in candidates if shape(profile) == shape(current)), candidates[0])
+    ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = selected["name"]
+
+
+def paper_landmark_profiles():
+    return sorted((profile for profile in LANDMARK_SCENARIO_PROFILES
+                   if core.landmark_profile_association_name(profile) == active_association_name()
+                   and all(row["type"] == "pose" for row in profile["landmarks"])),
+                  key=lambda profile: len(profile["landmarks"]))
 
 
 def step_count_for_duration(duration_s):
     return max(1, int(round(float(duration_s) / DT)))
-
-
-def landmark_type(landmark_id):
-    return LANDMARK_METADATA[landmark_id]["type"]
-
-
-def landmark_candidate_ids_for_type(landmark_type_name):
-    return [
-        landmark_id
-        for landmark_id in LANDMARKS.keys()
-        if landmark_type(landmark_id) == landmark_type_name
-    ]
-
-
-def unique_landmark_candidate_id_for_type(landmark_type_name):
-    candidates = [
-        landmark_id
-        for landmark_id in landmark_candidate_ids_for_type(landmark_type_name)
-        if LANDMARK_METADATA[landmark_id].get("unique", False)
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    return None
 
 
 def set_noise_cm(noise_std: float):
@@ -462,12 +363,12 @@ def set_viewing_angle_deg(value: float):
 
 
 def apply_visibility_stress_paper_conditions(association_name=DATA_ASSOCIATION_UNIQUE_ID_NAME):
-    global NOISE_ENABLED, VIEWING_ANGLE_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, ACTIVE_DATA_ASSOCIATION_NAME
+    global NOISE_ENABLED, VIEWING_ANGLE_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED
     NOISE_ENABLED = True
     VIEWING_ANGLE_ENABLED = True
     LANDMARK_DROPOUT_ENABLED = True
     LANDMARK_OBSTRUCTION_ENABLED = True
-    ACTIVE_DATA_ASSOCIATION_NAME = association_name
+    select_association_profile(association_name)
     set_viewing_angle_deg(DEFAULT_VIEWING_ANGLE_DEG)
     reset_landmark_obstruction_state()
     reset_motion_slip_state()
@@ -500,835 +401,31 @@ def motion_slip_label():
 
 
 # =========================
-# CORE
-# =========================
-
-def wrap_rad(angle_rad: float) -> float:
-    # Input:
-    #   angle_rad: angle in radians
-    # Output:
-    #   wrapped angle in radians in the interval [-pi, pi)
-    # Function:
-    #   wraps any angle value to the principal angle range
-    #   used to keep angular errors and headings bounded
-    return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
-
-
-def make_robot_gc_state(x_cm=0.0, y_cm=0.0, theta_rad=0.0):
-    # Input:
-    #   x_cm, y_cm, theta_rad: zeroth-order robot state values used to initialize generalized coordinates
-    # Output:
-    #   robot state in generalized-coordinate form with x, y, and theta series
-    # Function:
-    #   constructs the Core robot state representation from zeroth-order position/orientation inputs
-    #   initializes higher-order generalized coordinates to zero
-    def make_generalized_series(value=0.0, order=GENERALIZED_COORDINATE_ORDER):
-        return [float(value)] + [0.0] * int(order)
-
-    return {
-        "x": make_generalized_series(x_cm),
-        "y": make_generalized_series(y_cm),
-        "theta": make_generalized_series(theta_rad),
-    }
-
-def scalar_2_gc(robot_fcs_gc, x_cm=None, y_cm=None, theta_rad=None):
-    # Input:
-    #   robot_fcs_gc: robot state in generalized-coordinate form
-    #   x_cm, y_cm, theta_rad: optional scalar zeroth-order values to write into generalized coordinates
-    # Output:
-    #   robot state in generalized-coordinate form after the requested zeroth-order updates
-    # Function:
-    #   writes scalar position/orientation values into the zeroth-order generalized coordinates
-    #   leaves higher-order generalized coordinates unchanged
-    if x_cm is not None:
-        robot_fcs_gc["x"][0] = float(x_cm)
-    if y_cm is not None:
-        robot_fcs_gc["y"][0] = float(y_cm)
-    if theta_rad is not None:
-        robot_fcs_gc["theta"][0] = wrap_rad(float(theta_rad))
-    return robot_fcs_gc
-
-
-def gc_2_scalar(robot_fcs_gc):
-    # Input:
-    #   robot_fcs_gc: robot state in generalized-coordinate form
-    # Output:
-    #   scalar zeroth-order state values as x_cm, y_cm, theta_rad
-    # Function:
-    #   collapses the generalized coordinates into a flat scalar view ( the positions without velocity and acceleration)
-    #   used when code needs position/orientation values without the higher-order terms
-    return (
-        float(robot_fcs_gc["x"][0]),
-        float(robot_fcs_gc["y"][0]),
-        wrap_rad(float(robot_fcs_gc["theta"][0])),
-    )
-
-
-def obs_list_to_map(obs_list):
-    # Input:
-    #   obs_list: list of observation dicts, each carrying an "id" or "obs_id" field
-    # Output:
-    #   observation map keyed by landmark id or sensor observation id
-    # Function:
-    #   converts a list-form sensory observation set into a lookup map
-    #   used so landmark predictions or typed observations can be accessed directly during inference and analysis
-    return {o.get("id", o.get("obs_id")): o for o in obs_list}
-
-
-def motion_prediction_error(belief_fcs_gc, y_motion_obs):
-    # Input:
-    #   belief_fcs_gc: belief robot state in FCS generalized coordinates
-    #   y_motion_obs: sensed motion observation in RCS containing velocity and acceleration terms
-    # Output:
-    #   per-axis generalized motion prediction errors for x, y, and theta
-    #   each axis returns the components of D*mu - f(y):
-    #   vel_error, acc_error, and jerk_error
-    # Function:
-    #   computes the D-translated generalized-coordinate prediction error
-    #   D*mu - f(y) for velocity, acceleration and jerk (is 0).
-    #   The sensory motion in RCS is converted to FCS, to calculate the prediction error in the same reference frame as the belief state. 
-
-    obs_x_vel_fcs, obs_y_vel_fcs, obs_theta_vel = vel_rcs_2_fcs(
-        belief_fcs_gc,
-        y_motion_obs["x_vel_cm_s"],
-        y_motion_obs["y_vel_cm_s"],
-        y_motion_obs["theta_vel_rad_s"],
-    )
-    obs_x_acc_fcs, obs_y_acc_fcs, obs_theta_acc = acc_rcs_2_fcs(
-        belief_fcs_gc,
-        y_motion_obs["x_acc_cm_s2"],
-        y_motion_obs["y_acc_cm_s2"],
-        y_motion_obs["theta_acc_rad_s2"],
-    )
-    return {
-        "x": {
-            "vel_error": belief_fcs_gc["x"][1] - obs_x_vel_fcs,
-            "acc_error": belief_fcs_gc["x"][2] - obs_x_acc_fcs,
-            "jerk_error": 0.0,
-        },
-        "y": {
-            "vel_error": belief_fcs_gc["y"][1] - obs_y_vel_fcs,
-            "acc_error": belief_fcs_gc["y"][2] - obs_y_acc_fcs,
-            "jerk_error": 0.0,
-        },
-        "theta": {
-            "vel_error": belief_fcs_gc["theta"][1] - obs_theta_vel,
-            "acc_error": belief_fcs_gc["theta"][2] - obs_theta_acc,
-            "jerk_error": 0.0,
-        },
-    }
-
-
-def motion_inference_step(belief_fcs_gc, y_motion_obs, step_dt_s=DT):
-    # Input:
-    #   belief_fcs_gc: belief robot state in FCS generalized coordinates
-    #   y_motion_obs: motion observation treated as the sensory input to inference
-    #   step_dt_s: timestep for this motion inference update
-    # Output:
-    #   Updates the belief_fcs_gc state
-    #   Output for reporting and visualisation / diagnostics
-    #   motion_terms: D*mu - f(y) generalized motion prediction errors for x, y, and theta
-    #   F: free energy = precision-weighted sum of squared motion prediction errors
-    # Function:
-    #   performs one active-inference motion update step and updates the belief_fcs_gc state
-    #   returns also motion_terms and free_energy as diagnostic/reporting outputs
-
-    # Calculate the D-translated motion prediction error D*mu - f(y). In FCS.
-    motion_terms = motion_prediction_error(belief_fcs_gc, y_motion_obs)
-
-    # calculate mu_dot for x, y and angle generalized coordinates
-    # mu_dot = D*mu - D^T*Pi*(D*mu - f(y))
-    x_mu_dot = [
-        belief_fcs_gc["x"][1] - 0.0,
-        belief_fcs_gc["x"][2] - MOTION_LR_VEL_XY * PI_ODO * motion_terms["x"]["vel_error"],
-        0.0                   - MOTION_LR_ACC_XY * PI_IMU * motion_terms["x"]["acc_error"],
-    ]
-    y_mu_dot = [
-        belief_fcs_gc["y"][1] - 0.0,
-        belief_fcs_gc["y"][2] - MOTION_LR_VEL_XY * PI_ODO * motion_terms["y"]["vel_error"],
-        0.0                   - MOTION_LR_ACC_XY * PI_IMU * motion_terms["y"]["acc_error"],
-    ]
-    theta_mu_dot = [
-        belief_fcs_gc["theta"][1] - 0.0,
-        belief_fcs_gc["theta"][2] - MOTION_LR_VEL_THETA * PI_ODO * motion_terms["theta"]["vel_error"],
-        0.0                       - MOTION_LR_ACC_THETA * PI_IMU * motion_terms["theta"]["acc_error"],
-    ]
-
-    # Euler forward update rule mu(t+dt) = mu(t) + dt * mu_dot
-    belief_fcs_gc["x"][0] += step_dt_s * x_mu_dot[0]
-    belief_fcs_gc["x"][1] += step_dt_s * x_mu_dot[1]
-    belief_fcs_gc["x"][2] += step_dt_s * x_mu_dot[2]
-
-    belief_fcs_gc["y"][0] += step_dt_s * y_mu_dot[0]
-    belief_fcs_gc["y"][1] += step_dt_s * y_mu_dot[1]
-    belief_fcs_gc["y"][2] += step_dt_s * y_mu_dot[2]
-
-    belief_fcs_gc["theta"][0] = wrap_rad(belief_fcs_gc["theta"][0] + step_dt_s * theta_mu_dot[0])
-    belief_fcs_gc["theta"][1] += step_dt_s * theta_mu_dot[1]
-    belief_fcs_gc["theta"][2] += step_dt_s * theta_mu_dot[2]
-
-    # Calculate the free energy contribution
-    free_energy = 0.0
-    free_energy += PI_ODO * motion_terms["x"]["vel_error"] ** 2
-    free_energy += PI_IMU * motion_terms["x"]["acc_error"] ** 2
-    free_energy += PI_ODO * motion_terms["y"]["vel_error"] ** 2
-    free_energy += PI_IMU * motion_terms["y"]["acc_error"] ** 2
-    free_energy += PI_ODO * motion_terms["theta"]["vel_error"] ** 2
-    free_energy += PI_IMU * motion_terms["theta"]["acc_error"] ** 2
-    return motion_terms, free_energy
-
-
-def precision_distance_modifier(pred_obs):
-    # Input:
-    #   pred_obs: predicted landmark observation in RCS with x_rcs_cm, y_rcs_cm
-    # Output:
-    #   multiplicative precision modifier based on predicted landmark distance
-    # Function:
-    #   reduces precision for farther landmarks based on predicted range
-    #   range_cm = sqrt(x_rcs_cm^2 + y_rcs_cm^2)
-    #   modifier = max(min_factor, 1 / (1 + (range_cm / ref_cm)^2))
-    #   if disabled, landmark precision returns 1.0 (no modifier applied)
-    if not PRECISION_DISTANCE_MODIFIER_ENABLED:
-        return 1.0
-
-    range_cm = math.hypot(pred_obs["x_rcs_cm"], pred_obs["y_rcs_cm"])
-    range_ratio = range_cm / DISTANCE_PRECISION_REF_CM if DISTANCE_PRECISION_REF_CM > 0.0 else 0.0
-    modifier = 1.0 / (1.0 + range_ratio * range_ratio)
-    modifier = max(DISTANCE_PRECISION_MIN_FACTOR, modifier)
-    return modifier
-
-
-
-def landmark_fcs_2_rcs(robot_fcs_gc, x_cm, y_cm):
-    # Input:
-    #   robot state in generalized coordinates
-    #   position landmark in FCS: x_cm, y_cm
-    # Output:
-    #   where the landmark is observed in robot coordinates (RCS): x_rcs_cm, y_rcs_cm, angle_rad
-    # Function:
-    #   FCS -> RCS translation
-    #   converts a field position into the robot reference frame
-    #   Is the g(mu) function of sensory mapping in active inference
-
-    rx, ry, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    dx = x_cm - rx
-    dy = y_cm - ry
-    x_rcs = c * dx + s * dy
-    y_rcs = -s * dx + c * dy
-    angle_rad = math.atan2(y_rcs, x_rcs)
-    return x_rcs, y_rcs, angle_rad
-
-
-def vel_fcs_2_rcs(robot_fcs_gc, x_vel_fcs, y_vel_fcs, theta_vel):
-    # Input:
-    #   robot state in generalized coordinates
-    #   translational velocity in FCS (cm/s): x_vel_fcs, y_vel_fcs
-    #   angular velocity (rad/s): theta_vel
-    # Output:
-    #   velocity in robot coordinates (RCS, cm/s and rad/s): x_vel_rcs, y_vel_rcs, theta_vel
-    # Function:
-    #   FCS -> RCS translation for planar velocity vectors
-    #   rotates the field-frame velocity into the robot body frame
-
-    # Extract heading from the generalized-coordinate state.
-    _, _, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    # Rotate the FCS velocity vector into the robot frame.
-    x_vel_rcs = c * x_vel_fcs + s * y_vel_fcs
-    y_vel_rcs = -s * x_vel_fcs + c * y_vel_fcs
-
-    # Angular velocity is already aligned with the planar rotation axis.
-    return x_vel_rcs, y_vel_rcs, theta_vel
-
-
-def acc_fcs_2_rcs(robot_fcs_gc, x_acc_fcs, y_acc_fcs, theta_acc):
-    # Input:
-    #   robot state in generalized coordinates
-    #   translational acceleration in FCS (cm/s^2): x_acc_fcs, y_acc_fcs
-    #   angular acceleration (rad/s^2): theta_acc
-    # Output:
-    #   acceleration in robot coordinates (RCS, cm/s^2 and rad/s^2): x_acc_rcs, y_acc_rcs, theta_acc
-    # Function:
-    #   FCS -> RCS translation for planar acceleration vectors
-    #   rotates the field-frame acceleration into the robot body frame
-
-    # Extract heading from the generalized-coordinate state.
-    _, _, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    # Rotate the FCS acceleration vector into the robot frame.
-    x_acc_rcs = c * x_acc_fcs + s * y_acc_fcs
-    y_acc_rcs = -s * x_acc_fcs + c * y_acc_fcs
-
-    # Angular acceleration is already aligned with the planar rotation axis.
-    return x_acc_rcs, y_acc_rcs, theta_acc
-
-
-def vel_rcs_2_fcs(robot_fcs_gc, x_vel_rcs, y_vel_rcs, theta_vel):
-    # Input:
-    #   robot state in generalized coordinates
-    #   translational velocity in RCS (cm/s): x_vel_rcs, y_vel_rcs
-    #   angular velocity (rad/s): theta_vel
-    # Output:
-    #   velocity in field coordinates (FCS, cm/s and rad/s): x_vel_fcs, y_vel_fcs, theta_vel
-    # Function:
-    #   RCS -> FCS translation for planar velocity vectors
-    #   rotates the robot-frame velocity into the field frame
-
-    # Extract heading from the generalized-coordinate state.
-    _, _, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    # Rotate the RCS velocity vector into the field frame.
-    x_vel_fcs = c * x_vel_rcs - s * y_vel_rcs
-    y_vel_fcs = s * x_vel_rcs + c * y_vel_rcs
-
-    # Angular velocity is already aligned with the planar rotation axis.
-    return x_vel_fcs, y_vel_fcs, theta_vel
-
-
-def acc_rcs_2_fcs(robot_fcs_gc, x_acc_rcs, y_acc_rcs, theta_acc):
-    # Input:
-    #   robot state in generalized coordinates
-    #   translational acceleration in RCS (cm/s^2): x_acc_rcs, y_acc_rcs
-    #   angular acceleration (rad/s^2): theta_acc
-    # Output:
-    #   acceleration in field coordinates (FCS, cm/s^2 and rad/s^2): x_acc_fcs, y_acc_fcs, theta_acc
-    # Function:
-    #   RCS -> FCS translation for planar acceleration vectors
-    #   rotates the robot-frame acceleration into the field frame
-
-    # Extract heading from the generalized-coordinate state.
-    _, _, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    # Rotate the RCS acceleration vector into the field frame.
-    x_acc_fcs = c * x_acc_rcs - s * y_acc_rcs
-    y_acc_fcs = s * x_acc_rcs + c * y_acc_rcs
-
-    # Angular acceleration is already aligned with the planar rotation axis.
-    return x_acc_fcs, y_acc_fcs, theta_acc
-
-
-# NOTE:
-# `motion_jacobian_fcs_2_rcs(...)` is currently not used in V22.
-# Keeping the implementation commented out here as reference code rather than
-# deleting it, so it stays easy to restore if this Jacobian becomes relevant again.
-#
-# def motion_jacobian_fcs_2_rcs(robot_fcs_gc):
-#     # Input:
-#     #   robot state in generalized coordinates
-#     # Output:
-#     #   3x3 Jacobian matrix that maps [x_motion_fcs, y_motion_fcs, theta_motion]
-#     #   to [x_motion_rcs, y_motion_rcs, theta_motion]
-#     # Function:
-#     #   computes the FCS -> RCS local linearization for planar motion vectors
-#     #   uses theta only as a fixed rotation parameter
-#     #   shared by both the velocity and acceleration motion transforms
-#
-#     # Extract heading from the generalized-coordinate state.
-#     _, _, theta = gc_2_scalar(robot_fcs_gc)
-#     c = math.cos(theta)
-#     s = math.sin(theta)
-#
-#     # Build the planar rotation-plus-pass-through Jacobian.
-#     J = [
-#         [c, s, 0.0],
-#         [-s, c, 0.0],
-#         [0.0, 0.0, 1.0],
-#     ]
-#     return J
-
-
-def landmark_jacobian_fcs_2_rcs(robot_fcs_gc, x_cm, y_cm):
-    # Input:
-    #   robot state in generalized coordinates
-    #   landmark position in FCS: x_cm, y_cm
-    # Output:
-    #   Jacobian matrix of the sensory mapping g(mu) from FCS to RCS
-    #   rows correspond to x_rcs, y_rcs, angle_rad
-    #   columns correspond to robot x_cm, y_cm, theta_rad
-    # Function:
-    #   computes the local linearization of the landmark observation model
-    #   used to translate sensory prediction errors into belief updates
-    rx, ry, theta = gc_2_scalar(robot_fcs_gc)
-    c = math.cos(theta)
-    s = math.sin(theta)
-
-    dx = x_cm - rx
-    dy = y_cm - ry
-
-    x_rcs = c * dx + s * dy
-    y_rcs = -s * dx + c * dy
-    r2 = max(x_rcs * x_rcs + y_rcs * y_rcs, 1e-9) # protect against division by 0 error
-
-    dxrcs_dx = -c
-    dxrcs_dy = -s
-    dxrcs_dtheta = y_rcs
-
-    dyrcs_dx = s
-    dyrcs_dy = -c
-    dyrcs_dtheta = -x_rcs
-
-    dalpha_dx = dy / r2
-    dalpha_dy = -dx / r2
-    dalpha_dtheta = -1.0
-
-    J = [
-        [dxrcs_dx, dxrcs_dy, dxrcs_dtheta],
-        [dyrcs_dx, dyrcs_dy, dyrcs_dtheta],
-        [dalpha_dx, dalpha_dy, dalpha_dtheta],
-    ]
-    return J
-
-
-def JT_P_eps_single(J, eps, precision=None):
-    # Input:
-    #   J: Jacobian matrix of the sensory mapping for one landmark
-    #   eps: sensory prediction error vector [ex, ey, ea]
-    #   precision: scalar precision weight for this landmark contribution
-    # Output:
-    #   contribution to the belief update [gx, gy, gt]
-    # Function:
-    #   computes J^T P eps for a single landmark
-    #   converts one landmark's weighted sensory prediction error into an
-    #   update contribution for robot x, y, and theta
-    if precision is None:
-        precision = PI_CAM
-
-    we0 = precision * eps[0]
-    we1 = precision * eps[1]
-    we2 = precision * eps[2]
-    gx = J[0][0] * we0 + J[1][0] * we1 + J[2][0] * we2
-    gy = J[0][1] * we0 + J[1][1] * we1 + J[2][1] * we2
-    gt = J[0][2] * we0 + J[1][2] * we1 + J[2][2] * we2
-    return [gx, gy, gt]
-
-
-def landmarks_fcs_2_rcs(robot_fcs_gc, landmarks_fcs):
-    # Input:
-    #   robot state in generalized coordinates
-    #   landmark positions in FCS: {id: (x_cm, y_cm)}
-    # Output:
-    #   landmark predictions in robot coordinates (RCS): id, type, x_rcs_cm, y_rcs_cm, angle_rad
-    # Function:
-    #   FCS -> RCS translation
-    #   converts field landmarks into expected sensory observations for the robot
-    obs = []
-    for name, (lx, ly) in landmarks_fcs.items():
-        x_rcs, y_rcs, angle_rad = landmark_fcs_2_rcs(robot_fcs_gc, lx, ly)
-        obs.append({
-            "id": name,
-            "type": landmark_type(name),
-            "x_rcs_cm": x_rcs,
-            "y_rcs_cm": y_rcs,
-            "angle_rad": angle_rad,
-        })
-    return obs
-
-
-def landmark_is_within_viewing_angle(robot_fcs_gc, landmark_x_cm, landmark_y_cm, viewing_half_angle_rad):
-    # Input:
-    #   robot_fcs_gc: robot state in generalized coordinates
-    #   landmark_x_cm, landmark_y_cm: landmark position in FCS
-    #   viewing_half_angle_rad: half-width of the viewing cone around the robot forward axis
-    # Output:
-    #   True if the landmark lies inside the viewing cone, else False
-    # Function:
-    #   derives the landmark bearing in robot coordinates
-    #   checks whether the landmark is visible within the configured camera field of view
-    _, _, angle_rad = landmark_fcs_2_rcs(robot_fcs_gc, landmark_x_cm, landmark_y_cm)
-    if viewing_half_angle_rad >= math.pi:
-        return True
-    return abs(angle_rad) <= viewing_half_angle_rad
-
-
-def landmark_prediction_error(y_obs, yhat):
-    # Input:
-    #   y_obs: prepared typed landmark observation in RCS with x_rcs_cm, y_rcs_cm, and calculated angle_rad
-    #   yhat: predicted candidate landmark observation in RCS
-    # Output:
-    #   prediction error terms and position-only gate distance
-    # Function:
-    #   computes the sensory prediction error for one candidate association
-    ex = y_obs["x_rcs_cm"] - yhat["x_rcs_cm"]
-    ey = y_obs["y_rcs_cm"] - yhat["y_rcs_cm"]
-    ea = wrap_rad(y_obs["angle_rad"] - yhat["angle_rad"])
-    # Angle_weight can be used to normalize the angle error to the same scale as the position errors.
-    eps = [ex, ey, ANGLE_WEIGHT * ea]
-    position_error_cm = math.hypot(ex, ey)
-    error_score = math.sqrt(eps[0] * eps[0] + eps[1] * eps[1] + eps[2] * eps[2])
-    return eps, position_error_cm, error_score
-
-
-def calculate_angle(y_obs_map):
-    # Input:
-    #   y_obs_map: observed typed landmark map in RCS with x_rcs_cm and y_rcs_cm
-    # Output:
-    #   copied observation map with angle_rad calculated from x/y for every observation
-    # Function:
-    #   prepares landmark observations for the core x/y/angle update vector
-    #   automatically calculates angle_rad = atan2(y_rcs_cm, x_rcs_cm)
-    #   treats x_rcs_cm and y_rcs_cm as the source of truth for bearing
-    prepared = {}
-    for obs_id, y_obs in y_obs_map.items():
-        x_rcs_cm = float(y_obs["x_rcs_cm"])
-        y_rcs_cm = float(y_obs["y_rcs_cm"])
-        prepared_obs = dict(y_obs)
-        prepared_obs["x_rcs_cm"] = x_rcs_cm
-        prepared_obs["y_rcs_cm"] = y_rcs_cm
-        prepared_obs["angle_rad"] = math.atan2(y_rcs_cm, x_rcs_cm)
-        prepared[obs_id] = prepared_obs
-    return prepared
-
-
-def associate_landmark_observation(
-    y_obs,
-    yhat_map,
-    association_name=ACTIVE_DATA_ASSOCIATION_NAME,
-    used_candidate_ids=None,
-):
-    # Input:
-    #   y_obs: prepared typed landmark observation in RCS with calculated angle_rad
-    #   optionally carrying simulator/debug "landmark_id"
-    #   yhat_map: predicted candidate landmark observations in RCS, keyed by internal landmark id
-    #   association_name: selected data-association strategy
-    #   used_candidate_ids: candidates already consumed by this inference step
-    # Output:
-    #   association record with chosen candidate id, prediction errors, and gate status
-    # Function:
-    #   resolves one typed sensory observation to an internal landmark candidate
-    #   using the selected ambiguity/data-association strategy
-    used_candidate_ids = used_candidate_ids or set()
-    if association_name == DATA_ASSOCIATION_UNIQUE_ID_NAME:
-        candidate_id = y_obs.get("landmark_id")
-        if candidate_id is None or candidate_id in used_candidate_ids or candidate_id not in yhat_map:
-            return {
-                "accepted": False,
-                "candidate_id": None,
-                "eps": [0.0, 0.0, 0.0],
-                "position_error_cm": None,
-                "error_score": None,
-                "association_name": association_name,
-            }
-        eps, position_error_cm, error_score = landmark_prediction_error(y_obs, yhat_map[candidate_id])
-        return {
-            "accepted": True,
-            "candidate_id": candidate_id,
-            "eps": eps,
-            "position_error_cm": position_error_cm,
-            "error_score": error_score,
-            "association_name": association_name,
-        }
-
-    unique_candidate_id = unique_landmark_candidate_id_for_type(y_obs["type"])
-    if unique_candidate_id is not None and unique_candidate_id in yhat_map:
-        eps, position_error_cm, error_score = landmark_prediction_error(y_obs, yhat_map[unique_candidate_id])
-        return {
-            "accepted": True,
-            "candidate_id": unique_candidate_id,
-            "eps": eps,
-            "position_error_cm": position_error_cm,
-            "error_score": error_score,
-            "association_name": DATA_ASSOCIATION_UNIQUE_DIRECT_NAME,
-        }
-
-    if association_name != DATA_ASSOCIATION_GATED_NEAREST_NAME:
-        raise ValueError(f"Unknown landmark association algorithm: {association_name}")
-
-    candidates = [
-        candidate_id
-        for candidate_id in landmark_candidate_ids_for_type(y_obs["type"])
-        if candidate_id not in used_candidate_ids
-        and candidate_id in yhat_map
-    ]
-
-    best = None
-    for candidate_id in candidates:
-        eps, position_error_cm, error_score = landmark_prediction_error(y_obs, yhat_map[candidate_id])
-        candidate = {
-            "accepted": position_error_cm <= LANDMARK_ASSOCIATION_GATE_CM,
-            "candidate_id": candidate_id,
-            "eps": eps,
-            "position_error_cm": position_error_cm,
-            "error_score": error_score,
-            "association_name": association_name,
-        }
-        if best is None or candidate["error_score"] < best["error_score"]:
-            best = candidate
-
-    if best is None:
-        return {
-            "accepted": False,
-            "candidate_id": None,
-            "eps": [0.0, 0.0, 0.0],
-            "position_error_cm": None,
-            "error_score": None,
-            "association_name": association_name,
-        }
-    return best
-
-
-def landmark_inference_step(belief_fcs_gc, y_obs_map, step_dt_s=DT):
-    # Input:
-    #   belief_fcs_gc: belief robot state in FCS generalized coordinates
-    #   y_obs_map: prepared typed landmark map in RCS with x_rcs_cm, y_rcs_cm, and calculated angle_rad
-    #   step_dt_s: timestep for this landmark inference update
-    # Output:
-    #   Output for reporting and visualisation / diagnostics
-    #   yhat_map: predicted landmark map in RCS from the belief robot state
-    #   F: free energy = precision-weighted sum of squared sensory prediction errors
-    # Function:
-    #   performs one active-inference landmark update step and updates the belief_fcs_gc state
-    #   expects landmark observations to already be prepared with calculate_angle(...)
-    #   returns yhat_map and free_energy as diagnostic/reporting outputs
-    #   No generalized coordinates, only top row / positions (landmarks don’t move)
-
-    belief_x_cm, belief_y_cm, belief_theta_rad = gc_2_scalar(belief_fcs_gc)
-
-    # Landmark predictions given current belief robot position
-    yhat_map = obs_list_to_map(landmarks_fcs_2_rcs(belief_fcs_gc, LANDMARKS))
-
-    # Calculate mu_dot for x,y and angle
-    mu_dot = [0.0, 0.0, 0.0]
-    free_energy = 0.0
-    used_candidate_ids = set()
-    for _, y_obs in y_obs_map.items():  # for each observed typed place cell
-        # Associate the typed observation with the best internal landmark candidate.
-        association = associate_landmark_observation(
-            y_obs,
-            yhat_map,
-            ACTIVE_DATA_ASSOCIATION_NAME,
-            used_candidate_ids,
-        )
-        if not association["accepted"]:
-            continue
-        lid = association["candidate_id"]
-        used_candidate_ids.add(lid)
-
-        # calculate the prediction errors (x,y,angle)
-        # = sensory observation - predicted associated candidate observation
-        eps = association["eps"]
-        # calculate the jacobian
-        landmark_x, landmark_y = LANDMARKS[lid]
-        J = landmark_jacobian_fcs_2_rcs(belief_fcs_gc, landmark_x, landmark_y)
-        # calculate the precision distance modifier
-        precision = PI_CAM * precision_distance_modifier(yhat_map[lid])
-        # calculate J^T*P*eps for a single landmark
-        g = JT_P_eps_single(J, eps, precision)
-        mu_dot[0] += LR_XY * g[0]
-        mu_dot[1] += LR_XY * g[1]
-        mu_dot[2] += LR_ANGLE * g[2]
-        # Calculate the Free energy contribution
-        free_energy += precision * (eps[0] * eps[0] + eps[1] * eps[1] + eps[2] * eps[2])
-
-    # Euler forward update rule mu(t+dt) = mu(t) + dt * mu_dot
-    scalar_2_gc(
-        belief_fcs_gc,
-        x_cm=belief_x_cm + step_dt_s * mu_dot[0],
-        y_cm=belief_y_cm + step_dt_s * mu_dot[1],
-        theta_rad=belief_theta_rad + step_dt_s * mu_dot[2],
-    )
-    return yhat_map, free_energy
-
-
-def algorithm_uses_motion(algorithm_name):
-    return algorithm_name in {
-        MOTION_ONLY_ALGORITHM_NAME,
-        FUSED_MOTION_LANDMARK_ALGORITHM_NAME,
-    }
-
-
-def algorithm_uses_landmarks(algorithm_name):
-    return algorithm_name in {
-        LANDMARK_ONLY_ALGORITHM_NAME,
-        FUSED_MOTION_LANDMARK_ALGORITHM_NAME,
-    }
-
-
-def step_core(request):
-    # Input:
-    #   request: pybind11/JSON-friendly dict with:
-    #     belief_fcs_gc: generalized-coordinate belief state in FCS
-    #     landmark_observations_rcs: observed landmarks in RCS as type + x_rcs_cm + y_rcs_cm
-    #       angle_rad is not required from C++; it is calculated from x/y before landmark inference
-    #     motion_observation: observed motion terms in RCS
-    #     algorithm_name: optional inference mode
-    #     step_dt_s: required inference timestep, preferably computed by C++ from frame timestamps
-    #     timestamp: optional ISO 8601 / RFC 3339 observation-frame timestamp for traceability/logging
-    # Output:
-    #   dict containing the next belief_fcs_gc and diagnostics
-    # Function:
-    #   public headless core API for C++/pybind11 embedding
-    #   shields the core from external mutable/request-shaped objects
-    #   performs one inference step, and returns the
-    #   updated generalized-coordinate belief state for the next caller iteration
-    #   timestamp is not used to calculate dt here; C++ owns timestamp history
-    #   and passes the already computed step_dt_s into this stateless core call
-    def shield_belief_fcs_gc(belief_fcs_gc):
-        shielded = {}
-        for axis in ("x", "y", "theta"):
-            if axis not in belief_fcs_gc:
-                raise ValueError(f"belief_fcs_gc is missing axis '{axis}'")
-            values = list(belief_fcs_gc[axis])
-            if len(values) < 3:
-                raise ValueError(
-                    f"belief_fcs_gc axis '{axis}' must contain at least 3 values: "
-                    "position, velocity, acceleration"
-                )
-            shielded[axis] = [float(value) for value in values]
-        shielded["theta"][0] = wrap_rad(shielded["theta"][0])
-        return shielded
-
-    def shield_landmark_observations_rcs(landmark_observations_rcs):
-        shielded = []
-        for idx, obs in enumerate(landmark_observations_rcs or []):
-            for key in ("type", "x_rcs_cm", "y_rcs_cm"):
-                if key not in obs:
-                    raise ValueError(f"landmark_observations_rcs[{idx}] is missing '{key}'")
-            shielded.append({
-                "obs_id": str(obs.get("obs_id", f"obs_{idx}")),
-                "type": str(obs["type"]),
-                "x_rcs_cm": float(obs["x_rcs_cm"]),
-                "y_rcs_cm": float(obs["y_rcs_cm"]),
-            })
-        return shielded
-
-    def shield_motion_observation(motion_observation):
-        required_keys = (
-            "x_vel_cm_s",
-            "y_vel_cm_s",
-            "theta_vel_rad_s",
-            "x_acc_cm_s2",
-            "y_acc_cm_s2",
-            "theta_acc_rad_s2",
-        )
-        if motion_observation is None:
-            return None
-        shielded = {}
-        for key in required_keys:
-            if key not in motion_observation:
-                raise ValueError(f"motion_observation is missing '{key}'")
-            shielded[key] = float(motion_observation[key])
-        return shielded
-
-    def shield_algorithm_name(algorithm_name):
-        if algorithm_name is None:
-            return FUSED_MOTION_LANDMARK_ALGORITHM_NAME
-        algorithm_name = str(algorithm_name)
-        valid_algorithm_names = {
-            LANDMARK_ONLY_ALGORITHM_NAME,
-            MOTION_ONLY_ALGORITHM_NAME,
-            FUSED_MOTION_LANDMARK_ALGORITHM_NAME,
-        }
-        if algorithm_name not in valid_algorithm_names:
-            valid_names = ", ".join(sorted(valid_algorithm_names))
-            raise ValueError(
-                f"Unknown algorithm_name '{algorithm_name}'. "
-                f"Use one of: {valid_names}"
-            )
-        return algorithm_name
-
-    if request is None:
-        raise ValueError("step_core request is required")
-    if "belief_fcs_gc" not in request:
-        raise ValueError("step_core request requires 'belief_fcs_gc'")
-    if "step_dt_s" not in request:
-        raise ValueError("step_core request requires 'step_dt_s'")
-
-    belief_fcs_gc = shield_belief_fcs_gc(request["belief_fcs_gc"])
-    landmark_observations_rcs = shield_landmark_observations_rcs(request.get("landmark_observations_rcs", []))
-    algorithm_name = shield_algorithm_name(request.get("algorithm_name"))
-    motion_observation = shield_motion_observation(request.get("motion_observation"))
-    step_dt_s = float(request["step_dt_s"])
-    timestamp = None if request.get("timestamp") is None else str(request["timestamp"])
-
-    next_belief_fcs_gc, diagnostics = inference_step_from_observations(
-        belief_fcs_gc,
-        landmark_observations_rcs=landmark_observations_rcs,
-        motion_observation=motion_observation,
-        algorithm_name=algorithm_name,
-        step_dt_s=step_dt_s,
-    )
-    diagnostics["timestamp"] = timestamp
-    diagnostics["step_dt_s"] = step_dt_s
-    return {
-        "belief_fcs_gc": shield_belief_fcs_gc(next_belief_fcs_gc),
-        "diagnostics": diagnostics,
-    }
-
-
-def inference_step_from_observations(
-    belief_fcs_gc,
-    landmark_observations_rcs=None,
-    motion_observation=None,
-    algorithm_name=ACTIVE_ALGORITHM_NAME,
-    step_dt_s=DT,
-):
-    # Input:
-    #   belief_fcs_gc: belief robot state in FCS generalized coordinates
-    #   landmark_observations_rcs: observed landmarks in RCS from the caller/sensor adapter
-    #   each landmark observation supplies x_rcs_cm and y_rcs_cm; angle_rad is calculated from x/y
-    #   motion_observation: observed velocity/acceleration terms from odometry/IMU in RCS
-    #   algorithm_name: selects the active inference mode
-    #   step_dt_s: timestep for this inference update
-    # Output:
-    #   updated belief_fcs_gc in generalized-coordinate form and diagnostics
-    # Function:
-    #   performs one headless active-inference update using caller-supplied sensor data
-    #   prepares landmark observations by calculating angle_rad from x_rcs_cm and y_rcs_cm
-    #   this is the core boundary intended for real robot / external software integration
-    free_energy = 0.0
-    y_obs_map = calculate_angle(obs_list_to_map(landmark_observations_rcs or []))
-    yhat_map = obs_list_to_map(landmarks_fcs_2_rcs(belief_fcs_gc, LANDMARKS))
-    motion_terms = None
-    motion_free_energy = 0.0
-    landmark_free_energy = 0.0
-
-    # Motion prediction errors and generalized-coordinate update.
-    if algorithm_uses_motion(algorithm_name):
-        if motion_observation is None:
-            raise ValueError(f"{algorithm_name} requires a motion_observation")
-        motion_terms, motion_free_energy = motion_inference_step(
-            belief_fcs_gc,
-            motion_observation,
-            step_dt_s=step_dt_s,
-        )
-        free_energy += motion_free_energy
-
-    # Landmark prediction errors, Jacobian/update-term construction, and Euler update.
-    if algorithm_uses_landmarks(algorithm_name):
-        yhat_map, landmark_free_energy = landmark_inference_step(
-            belief_fcs_gc,
-            y_obs_map,
-            step_dt_s=step_dt_s,
-        )
-        free_energy += landmark_free_energy
-
-    diagnostics = {
-        "free_energy": free_energy,
-        "motion_free_energy": motion_free_energy,
-        "landmark_free_energy": landmark_free_energy,
-        "motion_terms": motion_terms,
-        "y_obs": y_obs_map,
-        "y_hat": yhat_map,
-    }
-    return belief_fcs_gc, diagnostics
-
-
-# =========================
 # SIMULATION EXPERIMENT
 # =========================
 # POC simulation layer on top of CORE.
 # Builds simulated sensor observations and runs repeated simulated inference steps.
+
+# --- Shared core adapter ---
+def ensure_simulation_core_configuration():
+    profile = active_landmark_scenario_profile()
+    if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
+        core.set_landmark_profile(profile["name"])
+    for name in core.CORE_SETTING_DEFAULTS:
+        if name != "ACTIVE_DATA_ASSOCIATION_NAME":
+            setattr(core, name, globals()[name])
+
+
+def simulation_step_from_observations(belief, observations, motion, algorithm_name, step_dt_s, timestamp=None):
+    """Simulator adapter: one supplied frame through the robot's public core API."""
+    ensure_simulation_core_configuration()
+    if timestamp is None:
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    response = core.step_core(dict(timestamp=timestamp, belief_fcs_gc=belief,
+                                   landmark_observations_rcs=observations, motion_observation=motion,
+                                   algorithm_name=algorithm_name, step_dt_s=step_dt_s))
+    return response
+
 
 # --- Non-core state views ---
 def robot_pose_view(robot_fcs_gc):
@@ -1484,12 +581,12 @@ def landmark_is_obstructed_for_this_step(landmark_id, step_dt_s=DT):
     return False
 
 
-def simulation_sense_landmarks(robot_fcs_gc, landmarks_fcs):
+def simulation_sense_landmarks(robot_fcs_gc, landmarks_fcs, return_ground_truth=False):
     # Input:
     #   robot state in generalized coordinates
     #   landmark positions in FCS: {id: (x_cm, y_cm)}
     # Output:
-    #   simulated landmark observations in robot coordinates (RCS): obs_id, type, landmark_id, x_rcs_cm, y_rcs_cm
+    #   named RCS observations; optional separate {obs_id: actual map point} for reports
     # Function:
     #   builds simulated sensory observations
     #   emits x/y landmark observations only; angle_rad is calculated by the core preparation step
@@ -1498,8 +595,14 @@ def simulation_sense_landmarks(robot_fcs_gc, landmarks_fcs):
     #   optionally hides landmarks for short obstruction windows
     #   only visible landmarks if viewing angle is enabled
     obs = []
-    for landmark_obs in landmarks_fcs_2_rcs(robot_fcs_gc, landmarks_fcs):
-        landmark_x_cm, landmark_y_cm = landmarks_fcs[landmark_obs["id"]]
+    ground_truth = {}
+    # Preserve report observation labels while recognition names change by scenario.
+    landmarks = active_landmark_scenario_profile()["landmarks"]
+    for landmark_id, (landmark_x_cm, landmark_y_cm) in landmarks_fcs.items():
+        x_rcs, y_rcs, angle = landmark_fcs_2_rcs(robot_fcs_gc, landmark_x_cm, landmark_y_cm)
+        landmark_obs = {"id": landmark_id,
+                        "name": landmarks[int(landmark_id)]["name"],
+                        "x_rcs_cm": x_rcs, "y_rcs_cm": y_rcs}
         if VIEWING_ANGLE_ENABLED and not landmark_is_within_viewing_angle(
             robot_fcs_gc,
             landmark_x_cm,
@@ -1521,14 +624,15 @@ def simulation_sense_landmarks(robot_fcs_gc, landmarks_fcs):
             x_rcs_cm += random.gauss(0, NOISE_STD_X_CM)
             y_rcs_cm += random.gauss(0, NOISE_STD_Y_CM)
 
+        obs_id = f"obs_{len(obs)}"
+        ground_truth[obs_id] = landmark_obs["id"]
         obs.append({
-            "obs_id": f"obs_{len(obs)}_{landmark_obs['type']}",
-            "type": landmark_obs["type"],
-            "landmark_id": landmark_obs["id"],
+            "obs_id": obs_id,
+            "name": landmark_obs["name"],
             "x_rcs_cm": x_rcs_cm,
             "y_rcs_cm": y_rcs_cm,
         })
-    return obs
+    return (obs, ground_truth) if return_ground_truth else obs
 
 
 def simulation_inference_step(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
@@ -1541,16 +645,15 @@ def simulation_inference_step(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
     #   builds simulated sensor observations from the actual robot state
     #   passes x/y landmark observations into the core, where angle_rad is calculated
     #   delegates the belief update to the headless core inference step
-    y_obs_list = simulation_sense_landmarks(robots["actual"], active_simulation_landmarks())
+    y_obs_list, ground_truth = simulation_sense_landmarks(robots["actual"], active_simulation_landmarks(), return_ground_truth=True)
     y_motion_obs = simulation_sense_motion(robots["actual"])
-    _, diagnostics = inference_step_from_observations(
-        robots["belief"],
-        landmark_observations_rcs=y_obs_list,
-        motion_observation=y_motion_obs,
-        algorithm_name=algorithm_name,
-        step_dt_s=DT,
-    )
-    return diagnostics["y_obs"], diagnostics["y_hat"], y_motion_obs, diagnostics["free_energy"]
+    response = simulation_step_from_observations(
+        robots["belief"], y_obs_list, y_motion_obs, algorithm_name, DT)
+    robots["belief"] = response["belief_fcs_gc"]
+    diagnostics = response["diagnostics"]
+    # Add simulator identity only to the report view, after the core call.
+    report_observations = {key: dict(obs, landmark_id=ground_truth[key]) for key, obs in diagnostics["y_obs"].items()}
+    return report_observations, diagnostics["y_hat"], y_motion_obs, diagnostics["free_energy"]
 
 
 # --- Simulated experiment runner ---
@@ -1576,13 +679,15 @@ def run_paper_lm_batch(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATIO
     previous_slip = (MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN)
     result = {"trials": [], "last_history": [], "stopped": False, "runs_per_profile": saved_setup["runs"]}
     try:
-        for profile_name in PAPER_LM_PROFILE_NAMES:
-            ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = profile_name
+        for profile in paper_landmark_profiles():
+            ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = profile["name"]
+            profile_name = profile["name"]
             for trial_number in range(1, saved_setup["runs"] + 1):
                 experiment = reset_paper_lm_experiment(saved_setup)
                 settings = experiment["settings"]
-                settings["landmark_scenario_profile"] = profile_name
+                settings["landmark_scenario_profile"] = profile["name"]
                 settings["landmark_scenario_count"] = len(active_simulation_landmarks())
+                settings["landmark_profile"] = deepcopy(profile)
                 history = []
                 trial = {
                     "landmark_profile": profile_name,
@@ -1712,7 +817,7 @@ def run_experiment(
 # =========================
 # REPORT
 # =========================
-PAPER_LM_REPORT_PROFILE_NAMES = ("3", "5", "9")
+PAPER_LM_REPORT_COUNTS = (3, 5, 9)
 
 def robot_generalized_coordinate_view(robot_fcs_gc):
     return robot_gc_view(robot_fcs_gc)
@@ -1786,10 +891,11 @@ def experiment_settings(algorithm_name):
         "lr_motion_vel_theta": MOTION_LR_VEL_THETA,
         "lr_motion_acc_xy": MOTION_LR_ACC_XY,
         "lr_motion_acc_theta": MOTION_LR_ACC_THETA,
-        "data_association": ACTIVE_DATA_ASSOCIATION_NAME,
+        "data_association": active_association_name(),
         "landmark_association_gate_cm": LANDMARK_ASSOCIATION_GATE_CM,
         "landmark_scenario_profile": ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME,
-        "landmark_scenario_count": len(active_landmark_scenario_profile()["landmark_ids"]),
+        "landmark_profile": deepcopy(active_landmark_scenario_profile()),
+        "landmark_scenario_count": len(active_landmark_scenario_profile()["landmarks"]),
     }
 
 
@@ -1903,7 +1009,7 @@ def export_paper_lm_dataset(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DU
         "steps_per_trial": max(1, int(round(duration_s / saved_setup["settings"]["dt"]))),
         "algorithm_name": saved_setup["algorithm_name"],
         "settings": saved_setup["settings"],
-        "landmark_profiles": [landmark_scenario_profile_by_name(name) for name in PAPER_LM_PROFILE_NAMES],
+        "landmark_profiles": paper_landmark_profiles(),
         "actual_start": robot_pose_view(saved_setup["robots"]["actual"]),
         "belief_start": robot_pose_view(saved_setup["robots"]["belief"]),
         "ball": saved_setup["ball"],
@@ -1957,7 +1063,7 @@ def simulation_settings_report_lines(settings):
         f"   angle={settings.get('viewing_angle_deg', 0.0):.1f} deg"
     )
     association_text = (
-        f"Association={settings.get('data_association', ACTIVE_DATA_ASSOCIATION_NAME)}"
+        f"Association={settings.get('data_association', active_association_name())}"
         f"   gate={settings.get('landmark_association_gate_cm', LANDMARK_ASSOCIATION_GATE_CM):.0f} cm"
     )
     landmark_profile_text = (
@@ -1998,14 +1104,22 @@ def learning_rate_report_row(settings):
     )
 
 
+def paper_lm_profile_counts(metadata):
+    # Read either self-contained profile snapshots or historical report metadata.
+    return {profile["name"]: len(profile.get("landmarks", profile.get("landmark_ids", [])))
+            for profile in metadata["landmark_profiles"]}
+
+
 def paper_lm_mean_errors(csv_path, metadata):
     """Compute mean, sample SD and P1/P99 of absolute errors at each time."""
     import csv
 
+    profile_counts = paper_lm_profile_counts(metadata)
+    selected_profiles = [name for name, count in profile_counts.items() if count in PAPER_LM_REPORT_COUNTS]
     completed = {
         (trial["landmark_profile"], trial["trial"])
         for trial in metadata["trials"]
-        if trial["completed"] and trial["landmark_profile"] in PAPER_LM_REPORT_PROFILE_NAMES
+        if trial["completed"] and trial["landmark_profile"] in selected_profiles
     }
     sums = {}
     with open(csv_path, newline="", encoding="utf-8") as csv_file:
@@ -2030,7 +1144,7 @@ def paper_lm_mean_errors(csv_path, metadata):
                 bucket[8 + idx].append(error)
 
     curves = {}
-    for profile in PAPER_LM_REPORT_PROFILE_NAMES:
+    for profile in selected_profiles:
         if profile not in sums:
             continue
         n = sum(p == profile for p, _ in completed)
@@ -2078,6 +1192,7 @@ def plot_paper_lm_report(csv_path, json_path, open_pdf=True):
             if isinstance(values, list):
                 curve[key] = values[:sample_count]
     settings = metadata["settings"]
+    profile_counts = paper_lm_profile_counts(metadata)
     target_times = sorted({
         step * settings["dt"]
         for trial in metadata["trials"]
@@ -2085,7 +1200,7 @@ def plot_paper_lm_report(csv_path, json_path, open_pdf=True):
         for step in trial.get("target_activation_steps", [])
         if step * settings["dt"] <= PAPER_LM_TRIAL_DURATION_S + 1e-9
     }) if settings["demo_path_name"] == "Random targets" else []
-    counts = ", ".join(f"LM {profile}: n={curves[profile]['n'] if profile in curves else 0}" for profile in PAPER_LM_REPORT_PROFILE_NAMES)
+    counts = ", ".join(f"LM {profile}: n={curves[profile]['n'] if profile in curves else 0}" for profile in curves)
     simulation_lines = simulation_settings_report_lines(settings)[:-1]
     header_lines = [
         "P-LM Experiment Report - Mean absolute tracking error",
@@ -2102,7 +1217,7 @@ def plot_paper_lm_report(csv_path, json_path, open_pdf=True):
         "   |   ".join(simulation_lines[4:]),
         precision_report_row(settings) + "   " + precision_distance_modifier_report_row(settings),
         learning_rate_report_row(settings),
-        "Profiles: " + "; ".join(f"{p['name']} = {', '.join(p['landmark_ids'])}" for p in metadata["landmark_profiles"] if p["name"] in PAPER_LM_REPORT_PROFILE_NAMES),
+        "Profiles: " + "; ".join(f"{p['name']} = {', '.join(row['name'] for row in p['landmarks']) if 'landmarks' in p else ', '.join(p['landmark_ids'])}" for p in metadata["landmark_profiles"] if p["name"] in curves),
         "Mean of |belief - actual| at each time; heading difference wrapped to [-pi, pi). No smoothing. Time zero included.",
         "Shading: P1-P99 across trials at each timestep (middle 98%; linear percentile interpolation). No clipping; no band for n<2.",
     ]
@@ -2142,9 +1257,9 @@ def plot_paper_lm_report(csv_path, json_path, open_pdf=True):
                     for profile, curve in curves.items():
                         if curve["n"] > 1:
                             axis.fill_between(curve["time_s"], curve[key + "_p1"], curve[key + "_p99"],
-                                              color=colors[profile], alpha=0.16, linewidth=0)
+                                              color=colors[str(profile_counts[profile])], alpha=0.16, linewidth=0)
                         legend_label = f"{profile} LM" if paper_ready else f"LM {profile} (n={curve['n']})"
-                        axis.plot(curve["time_s"], curve[key], label=legend_label, color=colors[profile], linestyle=styles[profile], linewidth=1.3)
+                        axis.plot(curve["time_s"], curve[key], label=legend_label, color=colors[str(profile_counts[profile])], linestyle=styles[str(profile_counts[profile])], linewidth=1.3)
                     axis.set_ylabel(label, fontsize=10)
                     for event_idx, time_s in enumerate(target_times):
                         axis.axvline(time_s, color="red", linewidth=0.6, alpha=0.65,
@@ -2279,7 +1394,7 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
     profile_text = settings.get("profile_name", "manual/unknown")
     path_text = settings.get("demo_path_name", "n/a")
     association_text = (
-        f"Association={settings.get('data_association', ACTIVE_DATA_ASSOCIATION_NAME)} "
+        f"Association={settings.get('data_association', active_association_name())} "
         f"gate={settings.get('landmark_association_gate_cm', LANDMARK_ASSOCIATION_GATE_CM):.0f}cm"
     )
     landmark_profile_text = (
@@ -3400,39 +2515,22 @@ def rcs_to_fcs(robot_fcs_gc, obs):
     return rx + dx, ry + dy
 
 
-def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc):
-    y_obs_map = calculate_angle(obs_list_to_map(simulation_sense_landmarks(actual_fcs_gc, active_simulation_landmarks())))
-    yhat_map = obs_list_to_map(landmarks_fcs_2_rcs(belief_fcs_gc, LANDMARKS))
-    observed_landmark_ids = list(y_obs_map.keys())
-
-    contributions = {}
-    associations = {}
+def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc, diagnostics=None, ground_truth=None):
+    if diagnostics is None:
+        observations, ground_truth = simulation_sense_landmarks(actual_fcs_gc, active_simulation_landmarks(), return_ground_truth=True)
+        diagnostics = simulation_step_from_observations(
+            belief_fcs_gc, observations, None, LANDMARK_ONLY_ALGORITHM_NAME, DT)["diagnostics"]
+    y_obs_map, yhat_map = diagnostics["y_obs"], diagnostics["y_hat"]
+    prediction_gc = diagnostics["landmark_prediction_gc"]
+    observed_landmark_ids = list(y_obs_map)
     used_candidate_ids = set()
-    for obs_id in observed_landmark_ids:
-        association = associate_landmark_observation(
-            y_obs_map[obs_id],
-            yhat_map,
-            ACTIVE_DATA_ASSOCIATION_NAME,
-            used_candidate_ids,
-        )
-        associations[obs_id] = association
-        if not association["accepted"]:
-            continue
-        lid = association["candidate_id"]
-        used_candidate_ids.add(lid)
-        eps = association["eps"]
-        landmark_x, landmark_y = LANDMARKS[lid]
-        J = landmark_jacobian_fcs_2_rcs(belief_fcs_gc, landmark_x, landmark_y)
-        precision = PI_CAM * precision_distance_modifier(yhat_map[lid])
-        contributions[obs_id] = JT_P_eps_single(J, eps, precision)
-
     details = []
-    for obs_id in observed_landmark_ids:
-        association = associations[obs_id]
-        if not association["accepted"]:
+    for association in diagnostics["landmark_terms"]:
+        if not association["used_for_update"]:
             continue
-        lid = association["candidate_id"]
-        actual_landmark_id = y_obs_map[obs_id].get("landmark_id")
+        obs_id, lid = association["obs_id"], association["candidate_id"]
+        used_candidate_ids.add(lid)
+        actual_landmark_id = ground_truth[obs_id]
         association_mismatch = (
             association["association_name"] == DATA_ASSOCIATION_GATED_NEAREST_NAME
             and actual_landmark_id is not None
@@ -3441,15 +2539,15 @@ def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc):
         ex = association["eps"][0]
         ey = association["eps"][1]
         ea = association["eps"][2] / ANGLE_WEIGHT if ANGLE_WEIGHT != 0.0 else 0.0
-        obs_fcs = rcs_to_fcs(belief_fcs_gc, y_obs_map[obs_id])
-        pred_fcs = rcs_to_fcs(belief_fcs_gc, yhat_map[lid])
-        contrib = contributions[obs_id]
+        obs_fcs = rcs_to_fcs(prediction_gc, y_obs_map[obs_id])
+        pred_fcs = rcs_to_fcs(prediction_gc, yhat_map[lid])
+        contrib = association["jt_p_eps"]
         contrib_mag = math.sqrt(contrib[0] * contrib[0] + contrib[1] * contrib[1] + contrib[2] * contrib[2])
         error_mag = math.sqrt(ex * ex + ey * ey + ea * ea)
         details.append({
             "id": lid,
             "obs_id": obs_id,
-            "type": y_obs_map[obs_id]["type"],
+            "name": y_obs_map[obs_id]["name"],
             "landmark_id": actual_landmark_id,
             "actual_landmark_id": actual_landmark_id,
             "associated_landmark_id": lid,
@@ -3459,7 +2557,7 @@ def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc):
             "ex": ex,
             "ey": ey,
             "ea": ea,
-            "precision": PI_CAM * precision_distance_modifier(yhat_map[lid]),
+            "precision": association["precision"],
             "range_cm": math.hypot(yhat_map[lid]["x_rcs_cm"], yhat_map[lid]["y_rcs_cm"]),
             "error_mag": error_mag,
             "association_error_cm": association["position_error_cm"],
@@ -3481,13 +2579,12 @@ def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc):
         "details": details,
         "total_contrib": total_contrib,
         "observed_landmark_ids": observed_landmark_ids,
-        "hidden_landmark_ids": [lid for lid in LANDMARKS.keys() if lid not in used_candidate_ids],
+        "hidden_landmark_ids": [lid for lid in active_simulation_landmarks() if lid not in used_candidate_ids],
         "association_mismatch_count": sum(1 for d in details if d["association_mismatch"]),
     }
 
 
-def motion_analysis_details(belief_fcs_gc, y_motion_obs):
-    motion_terms = motion_prediction_error(belief_fcs_gc, y_motion_obs)
+def motion_analysis_details(belief_fcs_gc, y_motion_obs, motion_terms):
     return [
         {
             "id": "x",
@@ -3536,8 +2633,15 @@ def one_step_analysis(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
     belief_pose = robot_pose_view(robots["belief"])
     y_motion_obs = simulation_sense_motion(robots["actual"])
 
+    if algorithm_uses_landmarks(algorithm_name):
+        observations, ground_truth = simulation_sense_landmarks(robots["actual"], active_simulation_landmarks(), return_ground_truth=True)
+    else:
+        observations, ground_truth = [], {}
+    diagnostics = simulation_step_from_observations(
+        robots["belief"], observations, y_motion_obs, algorithm_name, DT)["diagnostics"]
+
     if algorithm_name == MOTION_ONLY_ALGORITHM_NAME:
-        details = motion_analysis_details(robots["belief"], y_motion_obs)
+        details = motion_analysis_details(robots["belief"], y_motion_obs, diagnostics["motion_terms"])
         return {
             "mode": "motion",
             "actual_pose": actual_pose,
@@ -3545,10 +2649,10 @@ def one_step_analysis(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
             "details": details,
         }
 
-    landmark_data = landmark_analysis_data(robots["actual"], robots["belief"])
+    landmark_data = landmark_analysis_data(robots["actual"], robots["belief"], diagnostics, ground_truth)
 
     if algorithm_name == FUSED_MOTION_LANDMARK_ALGORITHM_NAME:
-        motion_details = motion_analysis_details(robots["belief"], y_motion_obs)
+        motion_details = motion_analysis_details(robots["belief"], y_motion_obs, diagnostics["motion_terms"])
         return {
             "mode": "fused",
             "actual_pose": actual_pose,
@@ -4438,17 +3542,17 @@ def run_headless_paper_dataset_export(
     association_name=None,
     precision_distance_modifier_enabled=True,
 ):
-    global ACTIVE_DATA_ASSOCIATION_NAME, PRECISION_DISTANCE_MODIFIER_ENABLED
+    global PRECISION_DISTANCE_MODIFIER_ENABLED
     PRECISION_DISTANCE_MODIFIER_ENABLED = bool(precision_distance_modifier_enabled)
     apply_masterdata_setting_profile(
         masterdata_setting_profile_by_name(profile_name, PRECISION_DISTANCE_MODIFIER_ENABLED)
     )
     if association_name is None:
-        association_name = DATA_ASSOCIATION_UNIQUE_ID_NAME if apply_paper_stress else ACTIVE_DATA_ASSOCIATION_NAME
+        association_name = DATA_ASSOCIATION_UNIQUE_ID_NAME if apply_paper_stress else active_association_name()
     if apply_paper_stress:
         apply_visibility_stress_paper_conditions(association_name)
     else:
-        ACTIVE_DATA_ASSOCIATION_NAME = association_name
+        select_association_profile(association_name)
     selected_demo_idx = demo_path_index_by_name(demo_path_name)
     if start_mode in {"nearby", "random"}:
         actual_start, belief_start = make_converge_start_pair(start_mode)
@@ -4794,7 +3898,7 @@ def draw_tooltip(screen, text, mouse_pos, font):
 
 # --- Main UI entrypoint ---
 def main():
-    global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_DATA_ASSOCIATION_NAME, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
     if getattr(pygame, "_is_stub", False) or getattr(plt, "_is_stub", False):
         raise ModuleNotFoundError("Interactive mode requires both pygame and matplotlib to be installed")
     pygame.init()
@@ -4847,8 +3951,6 @@ def main():
         FUSED_MOTION_LANDMARK_ALGORITHM_NAME,
     ]
     selected_algorithm_idx = algorithm_names.index(ACTIVE_ALGORITHM_NAME)
-    data_association_names = DATA_ASSOCIATION_ALGORITHM_NAMES
-    selected_data_association_idx = data_association_names.index(ACTIVE_DATA_ASSOCIATION_NAME)
     selected_settings_profile_idx = 0
     apply_masterdata_setting_profile(
         masterdata_setting_profile_by_name(
@@ -5031,9 +4133,13 @@ def main():
     row_y += btn_h + row_gap
     analysis_btn = pygame.Rect(panel_left, row_y, panel_inner_w, btn_h)
     row_y += btn_h + row_gap
-    algo_btn = pygame.Rect(panel_left, row_y, panel_inner_w, btn_h)
+    algorithm_profile_gap = 8
+    algorithm_profile_w = (panel_inner_w - algorithm_profile_gap) // 2
+    algo_btn = pygame.Rect(panel_left, row_y, algorithm_profile_w, btn_h)
+    settings_profile_btn = pygame.Rect(algo_btn.right + algorithm_profile_gap, row_y,
+                                       panel_inner_w - algorithm_profile_w - algorithm_profile_gap, btn_h)
     row_y += btn_h + row_gap
-    data_assoc_btn = pygame.Rect(panel_left, row_y, panel_inner_w, btn_h)
+    landmark_scenario_profile_btn = pygame.Rect(panel_left, row_y, panel_inner_w, btn_h)
     row_y += btn_h + row_gap
     step_btn_gap = 6
     step_btn_w = (panel_inner_w - 2 * step_btn_gap) // 3
@@ -5092,9 +4198,7 @@ def main():
     settings_w = 180
     settings_x = world_w - settings_w - 14
     settings_y = 14 + legend_h + 10
-    settings_profile_btn = pygame.Rect(settings_x, settings_y, settings_w, btn_h)
-    landmark_scenario_profile_btn = pygame.Rect(settings_x, settings_y + btn_h + row_gap, settings_w, btn_h)
-    settings_fields_y = settings_y + 2 * (btn_h + row_gap)
+    settings_fields_y = settings_y
     dt_input_rect = pygame.Rect(settings_x, settings_fields_y, settings_w, btn_h)
     precision_input_rect = pygame.Rect(settings_x, settings_fields_y + 1 * (btn_h + row_gap), settings_w, btn_h)
     precision_odo_input_rect = pygame.Rect(settings_x, settings_fields_y + 2 * (btn_h + row_gap), settings_w, btn_h)
@@ -5212,11 +4316,6 @@ def main():
             "motion_noise",
             motion_noise_input_rect,
             lambda: f"Motion noise sigma: {MOTION_NOISE_RATIO * 100.0:.1f}% of each velocity/acceleration reading",
-        ),
-        (
-            "data_association",
-            data_assoc_btn,
-            "Choose how landmark observations are matched to known field landmarks before the update",
         ),
         (
             "fov",
@@ -5555,22 +4654,6 @@ def main():
                 unused_surf = font_info.render("not used", True, (255, 60, 220))
                 screen.blit(unused_surf, (label_px[0] + 7, label_px[1] - 8))
 
-        draw_button(
-            screen,
-            settings_profile_btn,
-            fit_button_label(f"PROFILE {MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]}", font_b, settings_profile_btn.w - 16),
-            font_b,
-            (85, 75, 135),
-            (255, 255, 255),
-        )
-        draw_button(
-            screen,
-            landmark_scenario_profile_btn,
-            fit_button_label(f"LM PROFILE {ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME}", font_b, landmark_scenario_profile_btn.w - 16),
-            font_b,
-            (75, 105, 120),
-            (255, 255, 255),
-        )
         draw_input_box(screen, dt_input_rect, f"DT {input_fields['dt']['text']}", font_ui, input_fields["dt"]["active"], input_fields["dt"]["suffix"])
         draw_input_box(screen, precision_input_rect, f"\u03c0 cam {input_fields['precision']['text']}", font_ui, input_fields["precision"]["active"], input_fields["precision"]["suffix"])
         draw_input_box(screen, precision_odo_input_rect, f"\u03c0 odo {input_fields['precision_odo']['text']}", font_ui, input_fields["precision_odo"]["active"], input_fields["precision_odo"]["suffix"])
@@ -5588,10 +4671,18 @@ def main():
         draw_button(screen, algo_btn, algorithm_names[selected_algorithm_idx], font_b, (60, 90, 140), (255, 255, 255))
         draw_button(
             screen,
-            data_assoc_btn,
-            fit_button_label(f"ASSOC: {data_association_names[selected_data_association_idx]}", font_b, data_assoc_btn.w - 16),
+            settings_profile_btn,
+            fit_button_label(MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx], font_b, settings_profile_btn.w - 16),
             font_b,
             (85, 75, 135),
+            (255, 255, 255),
+        )
+        draw_button(
+            screen,
+            landmark_scenario_profile_btn,
+            fit_button_label(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME, font_b, landmark_scenario_profile_btn.w - 16),
+            font_b,
+            (60, 90, 140),
             (255, 255, 255),
         )
         draw_button(screen, exp1_btn, "STEP 1", font_b, (70, 70, 120), (255, 255, 255))
@@ -5834,10 +4925,6 @@ def main():
                     if algo_btn.collidepoint(mx, my):
                         selected_algorithm_idx = (selected_algorithm_idx + 1) % len(algorithm_names)
                         continue
-                    if data_assoc_btn.collidepoint(mx, my):
-                        selected_data_association_idx = (selected_data_association_idx + 1) % len(data_association_names)
-                        ACTIVE_DATA_ASSOCIATION_NAME = data_association_names[selected_data_association_idx]
-                        continue
                     if demo_btn.collidepoint(mx, my):
                         demo_state["selected_idx"] = (demo_state["selected_idx"] + 1) % len(demo_state["paths"])
                         demo_state["playing"] = False
@@ -5989,7 +5076,7 @@ def main():
                         last_history = paper_lm_result["last_history"]
                         completed = sum(trial["completed"] for trial in paper_lm_result["trials"])
                         outcome = "stopped" if paper_lm_result["stopped"] else "finished"
-                        converge_test_status = f"P-LM {outcome}: {completed}/{len(PAPER_LM_PROFILE_NAMES) * paper_lm_setup['runs']} trials saved in reports"
+                        converge_test_status = f"P-LM {outcome}: {completed}/{len(paper_landmark_profiles()) * paper_lm_setup['runs']} trials saved in reports"
                         print(f"P-LM CSV: {paper_lm_result['csv_path']}")
                         print(f"P-LM metadata: {paper_lm_result['json_path']}")
                         paper_lm_result.update(plot_paper_lm_report(paper_lm_result["csv_path"], paper_lm_result["json_path"]))
@@ -6270,7 +5357,7 @@ def main_cli(argv=None):
     )
     parser.add_argument(
         "--paper-data-association",
-        choices=DATA_ASSOCIATION_ALGORITHM_NAMES,
+        choices=configured_association_names(),
         default=None,
         help="Landmark association mode for headless export. Defaults to Unique ID when --paper-data-stress is used.",
     )

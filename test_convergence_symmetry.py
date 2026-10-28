@@ -3,6 +3,7 @@ import importlib.util
 import math
 from pathlib import Path
 import unittest
+import brain_inspired_localisation_core as core
 from unittest.mock import patch
 
 
@@ -108,74 +109,58 @@ class ConvergenceSymmetryTests(unittest.TestCase):
 
 class PosterLandmarkTests(unittest.TestCase):
     def test_far_profile_uses_only_its_distinct_poster(self):
-        import brain_inspired_localisation_core as core
-        for module in (sim, core):
-            usual_ids = module.landmark_scenario_profile_by_name("9")["landmark_ids"]
-            far_ids = module.landmark_scenario_profile_by_name("9+1far")["landmark_ids"]
-            self.assertEqual(len(far_ids), 10)
-            self.assertEqual(set(far_ids), set(usual_ids) | {"poster2"})
-            self.assertEqual(module.LANDMARKS["poster2"], (4900.0, 300.0))
-            self.assertEqual(module.LANDMARK_METADATA["poster2"], {"type": "poster2", "unique": True})
-            self.assertEqual(module.unique_landmark_candidate_id_for_type("poster1"), "poster1")
-            self.assertEqual(module.unique_landmark_candidate_id_for_type("poster2"), "poster2")
-        with patch.multiple(sim, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME="9+1far",
+        profile = sim.landmark_scenario_profile_by_name("9 ambiguous +1 orientation far")
+        self.assertEqual(len(profile["landmarks"]), 10)
+        self.assertEqual(profile["landmarks"][-1], dict(name="poster2", type="orientation", x_cm=4900.0, y_cm=300.0))
+        with patch.multiple(sim, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["name"],
                             NOISE_ENABLED=False, VIEWING_ANGLE_ENABLED=False,
                             LANDMARK_DROPOUT_ENABLED=False, LANDMARK_OBSTRUCTION_ENABLED=False):
             robot = sim.make_robot_gc_state()
             observations = sim.simulation_sense_landmarks(robot, sim.active_simulation_landmarks())
-        self.assertEqual(len(observations), 10)
-        self.assertNotIn("poster1", {obs["type"] for obs in observations})
-        poster = next(obs for obs in observations if obs["type"] == "poster2")
-        del poster["landmark_id"]
-        poster = next(iter(sim.calculate_angle({"far_poster": poster}).values()))
-        predictions = sim.obs_list_to_map(sim.landmarks_fcs_2_rcs(robot, sim.LANDMARKS))
-        association = sim.associate_landmark_observation(poster, predictions, sim.DATA_ASSOCIATION_GATED_NEAREST_NAME)
-        self.assertTrue(association["accepted"])
-        self.assertEqual(association["candidate_id"], "poster2")
+            sim.ensure_simulation_core_configuration()
+            predictions = core.obs_list_to_map(core.landmarks_fcs_2_rcs(robot, core.LANDMARKS))
+            poster = next(obs for obs in observations if obs["name"] == "poster2")
+            self.assertNotIn("landmark_id", poster)
+            self.assertNotIn("poster1", {obs["name"] for obs in observations})
+            association = core.associate_landmark_observation(sim.calculate_angle({"poster": poster})["poster"], predictions)
+            self.assertTrue(association["accepted"])
+            self.assertEqual(association["candidate_id"], "9")
 
     def test_poster_profile_and_standalone_map_agree(self):
-        import brain_inspired_localisation_core as core
-        usual_ids = sim.landmark_scenario_profile_by_name("9")["landmark_ids"]
-        poster_ids = sim.landmark_scenario_profile_by_name("9+1clo")["landmark_ids"]
-        self.assertEqual(len(usual_ids), 9)
-        self.assertEqual(len(poster_ids), 10)
-        self.assertEqual(set(poster_ids), set(usual_ids) | {"poster1"})
-        for module in (sim, core):
-            self.assertEqual(module.LANDMARKS["poster1"], (1200.0, 300.0))
-            self.assertEqual(module.unique_landmark_candidate_id_for_type("poster1"), "poster1")
-            self.assertEqual(module.LANDMARK_METADATA["poster1"], {"type": "poster1", "unique": True})
+        with patch.object(sim, "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME", "9 ambiguous +1 orientation close"):
+            sim.ensure_simulation_core_configuration()
+            self.assertEqual(core.LANDMARK_MAP, sim.active_landmark_scenario_profile()["landmarks"])
+            self.assertEqual(core.LANDMARKS["9"], (1200.0, 300.0))
+            self.assertEqual(core.unique_landmark_candidate_id_for_name("poster1"), "9")
 
     def test_poster_is_asymmetric_and_respects_field_of_view(self):
         actual = sim.make_robot_gc_state(200, -100, 0.25)
         mirrored = sim.make_robot_gc_state(-200, 100, 0.25 - math.pi)
-        with patch.multiple(sim, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME="9+1clo",
+        with patch.multiple(sim, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME="9 ambiguous +1 orientation close",
                             NOISE_ENABLED=False, VIEWING_ANGLE_ENABLED=False,
                             LANDMARK_DROPOUT_ENABLED=False, LANDMARK_OBSTRUCTION_ENABLED=False):
             observations = sim.simulation_sense_landmarks(actual, sim.active_simulation_landmarks())
-        self.assertEqual(len(observations), 10)
-        poster = next(obs for obs in observations if obs["type"] == "poster1")
-        del poster["landmark_id"]  # Recognition uses type, never the simulator's exact identity.
-        poster = next(iter(sim.calculate_angle({"poster_observation": poster}).values()))
-        predictions = sim.obs_list_to_map(sim.landmarks_fcs_2_rcs(mirrored, sim.LANDMARKS))
-        association = sim.associate_landmark_observation(poster, predictions, sim.DATA_ASSOCIATION_GATED_NEAREST_NAME)
-        self.assertTrue(association["accepted"])
-        self.assertEqual(association["candidate_id"], "poster1")
-        self.assertAlmostEqual(association["position_error_cm"], 2 * math.hypot(1200.0, 300.0))
-        with patch.multiple(sim, VIEWING_ANGLE_ENABLED=True, NOISE_ENABLED=False,
-                            LANDMARK_DROPOUT_ENABLED=False, LANDMARK_OBSTRUCTION_ENABLED=False):
-            poster_heading = math.atan2(300.0, 1200.0)
-            facing_poster = sim.make_robot_gc_state(0, 0, poster_heading)
-            facing_away = sim.make_robot_gc_state(0, 0, poster_heading + math.pi)
-            self.assertEqual(len(sim.simulation_sense_landmarks(facing_poster, {"poster1": sim.LANDMARKS["poster1"]})), 1)
-            self.assertEqual(sim.simulation_sense_landmarks(facing_away, {"poster1": sim.LANDMARKS["poster1"]}), [])
+            poster = next(obs for obs in observations if obs["name"] == "poster1")
+            sim.ensure_simulation_core_configuration()
+            predictions = core.obs_list_to_map(core.landmarks_fcs_2_rcs(mirrored, core.LANDMARKS))
+            association = core.associate_landmark_observation(sim.calculate_angle({"poster": poster})["poster"], predictions)
+            self.assertTrue(association["accepted"])
+            self.assertAlmostEqual(association["position_error_cm"], 2 * math.hypot(1200, 300))
+            with patch.object(sim, "VIEWING_ANGLE_ENABLED", True):
+                heading = math.atan2(300, 1200)
+                facing = sim.make_robot_gc_state(0, 0, heading)
+                away = sim.make_robot_gc_state(0, 0, heading + math.pi)
+                poster_map = {"9": (1200.0, 300.0)}
+                self.assertEqual(len(sim.simulation_sense_landmarks(facing, poster_map)), 1)
+                self.assertEqual(sim.simulation_sense_landmarks(away, poster_map), [])
 
-    def test_visible_poster_displaces_symmetric_belief(self):
+    def test_orientation_posters_do_not_displace_symmetric_tracking_belief(self):
         with patch.multiple(sim, DT=0.025, LR_XY=1.6, LR_ANGLE=sim.DEFAULT_ANGLE_LR * 0.8,
                             NOISE_ENABLED=False, VIEWING_ANGLE_ENABLED=False,
                             LANDMARK_DROPOUT_ENABLED=False, LANDMARK_OBSTRUCTION_ENABLED=False,
                             PRECISION_DISTANCE_MODIFIER_ENABLED=True,
-                            ACTIVE_DATA_ASSOCIATION_NAME=sim.DATA_ASSOCIATION_GATED_NEAREST_NAME):
-            for profile, stays_symmetrical in (("9", True), ("9+1clo", False)):
+                            ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME="9 ambiguous"):
+            for profile, stays_symmetrical in (("9 ambiguous", True), ("9 ambiguous +1 orientation close", True), ("9 ambiguous +1 orientation far", True)):
                 with self.subTest(profile=profile), patch.object(sim, "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME", profile):
                     robots = {
                         "actual": sim.make_robot_gc_state(200.0, -100.0, 0.25),

@@ -3,7 +3,7 @@ step_core C++ / pybind11 interface
 
 Purpose
 -------
-The Python localization core exposes one C++/pybind11 entrypoint:
+The per-frame C++/pybind11 entrypoint is:
 
     step_core(request)
 
@@ -23,9 +23,10 @@ For real robot integration, import:
 
     brain_inspired_localisation_core
 
-The file brain_inspired_localisation_core.py is a copy of the algorithm core
-prepared to run headlessly on a real robot. It does not import pygame,
-matplotlib, or the simulator/UI, keeping the runtime lightweight.
+brain_inspired_localisation_core.py is the single algorithm implementation.
+It imports only the standard library, with no pygame, matplotlib, simulator or
+map-file reads. Complete landmark profiles are Python data in core; the first
+profile is selected by default. No landmark initialization function is needed.
 
 
 Masterdata configuration before the first run
@@ -37,19 +38,36 @@ settings are separate from those in the interactive POC file.
 Check:
     - Soccer field length and width, and mapped landmark positions in FCS.
       All distances must be in centimeters.
-    - Which landmark types the robot can detect, and whether those types match
-      the landmark map and metadata. A type is unique only when it identifies
+    - Which recognition names the robot can detect, and whether those names match
+      the landmark map and metadata. A name is unique only when it identifies
       one field landmark.
-    - Landmark association mode and distance gate. Real robot observations
-      provide landmark types, not exact map landmark IDs.
+    - Landmark recognition names and distance gate. Real robot observations
+      provide recognition names, not a separate exact map landmark ID.
     - Camera, odometry, and IMU precision settings, and position, heading,
       velocity, and acceleration learning rates for the update frequency.
     - Whether the distance precision modifier is enabled, and its reference
       distance and minimum factor.
 
-Configure these settings before processing observation frames. The landmark
-map is built when the module is imported; changing field dimensions afterward
-does not automatically rebuild it.
+Select a built-in profile before processing frames, for example:
+
+    core.set_landmark_profile("9 unique")
+
+The GUI sets the selected profile in core. step_core does not receive a profile
+name or landmark configuration. Selecting a profile updates the map, leaving the existing core gains/precisions
+unchanged. Unique names match directly; repeated names use gated nearest.
+The GUI synchronizes those existing uppercase settings separately.
+Belief and timing remain caller-owned and are supplied with every frame.
+
+LANDMARK_SCENARIO_PROFILES contains self-contained records with name and a
+complete landmarks list. Each landmark has name, type (pose/orientation),
+x_cm and y_cm. Positions are absolute FCS centimeters. Name counts in the full
+selected map determine uniqueness. Normal tracking ignores orientation landmarks;
+they contribute neither updates nor free energy.
+
+Map-point diagnostic keys are strings of zero-based row indices in the selected
+profile, not sensor identities. The simulator uses this same map to generate
+sensor observations; FOV limits observations independently. Individual recognition
+names exist only when explicitly defined in the selected profile.
 
 Simulation LM PROFILE selections do not configure real robot perception.
 Supply only landmarks actually detected in the current observation frame.
@@ -73,7 +91,7 @@ The request is a pybind11/JSON-friendly dictionary:
         "landmark_observations_rcs": [
             {
                 "obs_id": "cam_0",
-                "type": "corner",
+                "name": "corner",
                 "x_rcs_cm": 120.0,
                 "y_rcs_cm": -40.0
             }
@@ -146,13 +164,13 @@ step_dt_s:
 
         step_dt_s = current_timestamp - previous_timestamp
 
-    Python does not calculate this delta internally.
+    Python does not calculate this delta internally. It must be finite and positive.
 
 
-Optional fields
----------------
+Timestamp and optional algorithm
+--------------------------------
 timestamp:
-    Optional. This is the timestamp of the complete observation frame. It is
+    Required. This is the timestamp of the complete observation frame. It is
     used for diagnostics/logging and is not used in the calculation.
 
     Format:
@@ -162,7 +180,7 @@ timestamp:
         2026-05-01T13:45:12.345Z
 
     Notes:
-        - The trailing Z means UTC.
+        - The suffix must be Z or +00:00 (UTC).
         - Milliseconds are the three digits after the decimal point.
         - Python treats this value as metadata and echoes it in diagnostics.
         - The algorithm uses the field step_dt_s in the update step.
@@ -242,13 +260,13 @@ Each landmark observation should contain:
 
     {
         "obs_id": "cam_0",
-        "type": "corner",
+        "name": "corner",
         "x_rcs_cm": 120.0,
         "y_rcs_cm": -40.0
     }
 
 Required:
-    type
+    name
     x_rcs_cm
     y_rcs_cm
 
@@ -258,15 +276,17 @@ Optional:
     If obs_id is omitted, Python assigns:
         obs_0, obs_1, ...
 
-Current landmark type values:
+Default map recognition names:
     center
     middle
     corner
     goal
+    poster1
+    poster2
 
 Important:
     Do not send landmark_id from the real robot path. The real robot perception
-    system is expected to identify landmark type, not the exact map landmark.
+    system supplies the recognition name known to its configured map.
     step_core ignores/removes landmark_id at the API boundary if it is present.
     Do not send angle_rad from the real robot path. Python calculates angle_rad
     from x_rcs_cm and y_rcs_cm before running the core landmark update.
@@ -277,37 +297,33 @@ Association:
         Unique ID
         Unique direct
 
-    Unique direct is an internal path used when a landmark type maps to one
-    unique field landmark, such as the center point. The real robot path should
-    not depend on Unique ID, because real robot observations should not contain
-    exact map landmark_id values. Use typed observations in RCS and let the
-    Python core associate them to field landmarks.
+    Association candidates are selected only by observation name. One matching
+    map point uses direct association; several matching points use nearest
+    association with the existing distance gate. Unknown names are rejected.
+    A profile containing only unique names is a perfect-recognition test scenario:
+    simulator map points get individual recognition names (corner_TR, etc.)
+    and sensor observations supply these names through the same public API.
+    It does not read landmark_id or bypass the name lookup. The real robot can
+    use individual names only when its perception actually distinguishes them.
+    Simulator ground truth is retained separately for reports, not supplied to
+    inference. Select the built-in recognition profile in core; no map files are read.
 
 
 Landmark maps and profiles
 --------------------------
-The current POC defines nine field landmarks in Python masterdata:
+LANDMARK_SCENARIO_PROFILES in core is one list of complete profiles, for example:
 
-    center
-    left_middle
-    right_middle
-    corner_TR
-    corner_TL
-    corner_BR
-    corner_BL
-    goal_opponent
-    goal_own
+    {"name": "2 ambiguous", "landmarks": [
+        {"name": "goal", "type": "pose", "x_cm": 900, "y_cm": 0},
+        {"name": "goal", "type": "pose", "x_cm": -900, "y_cm": 0}
+    ]}
 
-The simulator can restrict generated observations through landmark scenario
-profiles:
-
-    9 = all landmarks
-    2 = goal_opponent, goal_own
-    5 = goal_opponent, goal_own, center, left_middle, right_middle
-
-These profiles belong to the simulation/reporting layer. They do not add a
-field to the step_core request. Real robot integration supplies the observations
-that were actually seen in the current frame.
+A 9 unique profile explicitly lists nine individually named landmarks. A
+9 ambiguous profile explicitly lists repeated names where recognition is
+ambiguous. Each profile includes all coordinates/types, with no references to
+another table. The GUI selects the desired profile with set_landmark_profile. Each step_core
+request supplies observed names in RCS, without a profile field. Orientation landmarks, when included
+in a profile, remain ignored during normal tracking; gPI is not implemented.
 
 
 Response schema
@@ -328,9 +344,20 @@ step_core returns:
             "landmark_free_energy": ...,
             "motion_terms": ...,
             "y_obs": ...,
-            "y_hat": ...
+            "y_hat": ...,
+            "landmark_terms": [...],
+            "landmark_prediction_gc": {...},
+            "settings": {...}
         }
     }
+
+landmark_terms contains actual per-observation associations, used_for_update,
+skip_reason for rejected/orientation observations, and (for applied updates)
+precision, jacobian, jt_p_eps, mu_dot_contribution and free_energy_contribution.
+landmark_prediction_gc is the GC used to predict landmarks after the motion
+update. No UI reimplementation is needed to obtain those terms. settings records the
+precisions/gains/association configuration used for this call. Outputs contain
+no references to the request or mutable active configuration.
 
 The C++ robot software should store:
 
@@ -342,7 +369,7 @@ and use it as the next request's belief_fcs_gc.
 C++ / pybind11 integration sketch
 ---------------------------------
 Initialize Python once at program startup, import the module once, and cache
-the step_core function. Do not initialize Python every control tick.
+the step_core function. Select the desired built-in profile before stepping. Do not initialize Python every control tick.
 
 Conceptual example:
 
@@ -352,6 +379,7 @@ Conceptual example:
     py::scoped_interpreter guard{};
 
     py::module loc = py::module::import("brain_inspired_localisation_core");
+    loc.attr("set_landmark_profile")("9 unique");
     py::object step_core = loc.attr("step_core");
 
     py::dict request;
@@ -369,6 +397,7 @@ Conceptual example:
 Runtime responsibilities
 ------------------------
 C++ should:
+    - Supply the landmark list and explicit core settings at initialization.
     - Own the real-time loop.
     - Read sensors.
     - Maintain previous/current frame timestamps.
