@@ -2,7 +2,7 @@
 # Based on version POC V29
 import json
 import datetime
-import brain_inspired_localisation_core as core
+import brain_inspired_localization_core as core
 import math
 from pathlib import Path
 from copy import deepcopy
@@ -11,7 +11,7 @@ import sys
 import textwrap
 import types
 
-from brain_inspired_localisation_core import (
+from brain_inspired_localization_core import (
     wrap_rad, make_robot_gc_state, scalar_2_gc, gc_2_scalar, obs_list_to_map,
     landmark_fcs_2_rcs, vel_fcs_2_rcs, acc_fcs_2_rcs, vel_rcs_2_fcs, acc_rcs_2_fcs,
     landmark_is_within_viewing_angle, calculate_angle, algorithm_uses_motion, algorithm_uses_landmarks,
@@ -46,18 +46,23 @@ except ModuleNotFoundError:
     sys.modules["pygame"] = pygame
 
 # =========================
-# CONFIG (all in cm)
+# SIMULATOR / UI CONFIGURATION
 # =========================
+# --- Field drawing in GUI and simulation settings (eg starting pose) (cm) ---
+# Used to draw the field, generate test starting poses, and bound demo/UI movement.
+# These dimensions do not configure CORE's landmark map; each core profile lists
 FIELD_LENGTH_CM = 1800
 FIELD_WIDTH_CM = 1200
 OUTSIDE_MARGIN_CM = 250
-GOAL_WIDTH_CM = 240
-GOAL_DEPTH_CM = 80
+GOAL_WIDTH_CM = 240 
+GOAL_DEPTH_CM = 80  
 CENTER_CIRCLE_RADIUS_CM = 200
 GOAL_AREA_WIDTH_CM = 390
 GOAL_AREA_DEPTH_CM = 75
 PENALTY_AREA_WIDTH_CM = 600
 PENALTY_AREA_DEPTH_CM = 225
+
+# --- Display and interaction settings (px unless indicated otherwise) ---
 FIELD_MARKING_WIDTH_PX = 2
 
 PANEL_W_PX = 400

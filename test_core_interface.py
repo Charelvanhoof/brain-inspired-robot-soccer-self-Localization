@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-import brain_inspired_localisation_core as core
+import brain_inspired_localization_core as core
 
 
 class CoreInterfaceTests(unittest.TestCase):
@@ -45,10 +45,10 @@ class CoreInterfaceTests(unittest.TestCase):
                                                            "x_acc_cm_s2", "y_acc_cm_s2", "theta_acc_rad_s2")})
 
     def test_core_import_needs_no_landmark_file_or_gui(self):
-        with tempfile.TemporaryDirectory(prefix="standalone-localisation-core-") as directory:
-            shutil.copyfile(core.__file__, Path(directory) / "brain_inspired_localisation_core.py")
+        with tempfile.TemporaryDirectory(prefix="standalone-localization-core-") as directory:
+            shutil.copyfile(core.__file__, Path(directory) / "brain_inspired_localization_core.py")
             code = (f"import sys; sys.path.insert(0, {directory!r}); "
-                    "import brain_inspired_localisation_core as core; "
+                    "import brain_inspired_localization_core as core; "
                     "assert len(core.LANDMARK_MAP) == 9; "
                     "assert 'pygame' not in sys.modules and 'matplotlib' not in sys.modules; "
                     "assert not hasattr(core, 'initialize_core'); "
@@ -131,9 +131,9 @@ class CoreInterfaceTests(unittest.TestCase):
         self.assertEqual(response["diagnostics"]["landmark_terms"], [])
 
     def test_selected_core_profile_replays_frozen_numeric_reference(self):
-        import test_localisation_regression as regression
+        import test_localization_regression as regression
         data = json.loads(regression.BASELINE.read_text(encoding="utf-8"))
-        compare = regression.LocalisationRegressionTests().assert_close
+        compare = regression.LocalizationRegressionTests().assert_close
         references = {"gated_near_poster": "gated_symmetric_9", "gated_far_poster": "gated_near_9"}
         for case in data["scenarios"]:
             with self.subTest(case=case["name"]):

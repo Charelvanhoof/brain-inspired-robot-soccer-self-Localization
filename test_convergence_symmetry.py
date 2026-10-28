@@ -3,12 +3,12 @@ import importlib.util
 import math
 from pathlib import Path
 import unittest
-import brain_inspired_localisation_core as core
+import brain_inspired_localization_core as core
 from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location(
-    "localisation_simulator", Path(__file__).with_name("brain inspired localisation.py"),
+    "localization_simulator", Path(__file__).with_name("brain_inspired_localization_simulator.py"),
 )
 sim = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sim)

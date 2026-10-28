@@ -21,9 +21,9 @@ Call:
 
 For real robot integration, import:
 
-    brain_inspired_localisation_core
+    brain_inspired_localization_core
 
-brain_inspired_localisation_core.py is the single algorithm implementation.
+brain_inspired_localization_core.py is the single algorithm implementation.
 It imports only the standard library, with no pygame, matplotlib, simulator or
 map-file reads. Complete landmark profiles are Python data in core; the first
 profile is selected by default. No landmark initialization function is needed.
@@ -378,7 +378,7 @@ Conceptual example:
 
     py::scoped_interpreter guard{};
 
-    py::module loc = py::module::import("brain_inspired_localisation_core");
+    py::module loc = py::module::import("brain_inspired_localization_core");
     loc.attr("set_landmark_profile")("9 unique");
     py::object step_core = loc.attr("step_core");
 

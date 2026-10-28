@@ -1,6 +1,6 @@
-"""Frozen pre-refactor regression cases; run python -m unittest test_localisation_regression -v.
+"""Frozen pre-refactor regression cases; run python -m unittest test_localization_regression -v.
 
-Capture explicitly with python test_localisation_regression.py --capture-baseline.
+Capture explicitly with python test_localization_regression.py --capture-baseline.
 Never recapture merely to make a failed regression pass.
 """
 from contextlib import ExitStack
@@ -16,11 +16,11 @@ import sys
 import unittest
 from unittest.mock import patch
 
-import brain_inspired_localisation_core as core
+import brain_inspired_localization_core as core
 
 ROOT = Path(__file__).resolve().parent
-BASELINE = ROOT / "localisation_regression_baseline.json"
-spec = importlib.util.spec_from_file_location("regression_simulator", ROOT / "brain inspired localisation.py")
+BASELINE = ROOT / "localization_regression_baseline.json"
+spec = importlib.util.spec_from_file_location("regression_simulator", ROOT / "brain_inspired_localization_simulator.py")
 sim = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sim)
 
@@ -248,7 +248,7 @@ def capture_baseline():
         case["expected"] = replay(sim, case)
     data = dict(reference_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 source_sha256={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                               for name in ("brain inspired localisation.py", "brain_inspired_localisation_core.py")},
+                               for name in ("brain_inspired_localization_simulator.py", "brain_inspired_localization_core.py")},
                 settings=SETTINGS, sensors=SENSORS, scenarios=cases, expected_report=report_replay(cases))
     BASELINE.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     for case in cases:
@@ -351,7 +351,7 @@ class LandmarkMapTests(unittest.TestCase):
                 self.assertTrue(all(len(curve["time_s"]) == 3 for curve in curves.values()))
 
 
-class LocalisationRegressionTests(unittest.TestCase):
+class LocalizationRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.data = json.loads(BASELINE.read_text(encoding="utf-8"))
@@ -588,7 +588,7 @@ class RecognitionNameTests(unittest.TestCase):
 
     def test_gui_has_no_copied_core_function_definitions(self):
         import ast
-        gui = ast.parse((ROOT / "brain inspired localisation.py").read_text(encoding="utf-8"))
+        gui = ast.parse((ROOT / "brain_inspired_localization_simulator.py").read_text(encoding="utf-8"))
         algorithm = ast.parse(Path(core.__file__).read_text(encoding="utf-8"))
         names = lambda tree: {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
         self.assertEqual(names(gui) & names(algorithm), set())

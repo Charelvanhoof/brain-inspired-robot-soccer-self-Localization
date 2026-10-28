@@ -1,21 +1,21 @@
-# Brain Inspired Localisation POC
+# Brain Inspired Localization POC
 
-This project is a proof of concept for robot self-localisation using active
+This project is a proof of concept for robot self-localization using active
 inference. It simulates a robot on a RoboCup-style field, compares the actual
 robot state with the belief state, and lets you test landmark-only,
-motion-only, and fused localisation.
+motion-only, and fused localization.
 
 The simulator is intentionally basic. It is mainly used to feed observations
-into the localisation algorithm and to generate reports, not to be a
+into the localization algorithm and to generate reports, not to be a
 high-fidelity robot physics model.
 
 ## Project Files
 
-- `brain inspired localisation.py`: interactive POC simulator, experiments,
+- `brain_inspired_localization_simulator.py`: interactive POC simulator, experiments,
   convergence tests and reports; calls the shared core (POC V29).
-- `brain_inspired_localisation_core.py`: standalone localisation core module
+- `brain_inspired_localization_core.py`: standalone localization core module
   exposing `step_core(request)` for integration without the GUI.
-- `brain_inspired_localisation_core.py`: contains the editable list of complete landmark profiles.
+- `brain_inspired_localization_core.py`: contains the editable list of complete landmark profiles.
 - `step_core_cpp_interface.txt`: C++ / pybind11 request and response notes.
 - `Robot_Soccer_Self_Localization_with_Active_Inference.pdf`: latest paper.
 - `reports/`: generated datasets and reports.
@@ -40,7 +40,7 @@ Required dependencies:
 Start the GUI with:
 
 ```powershell
-python ".\brain inspired localisation.py"
+python ".\brain_inspired_localization_simulator.py"
 ```
 
 ## GUI Basics
@@ -123,7 +123,7 @@ use completed trials only.
 Run a tracking dataset export without opening the GUI, for example:
 
 ```powershell
-python ".\brain inspired localisation.py" --export-paper-data --paper-data-profile 40Hz --paper-data-duration-s 7200 --paper-data-path "Circle" --paper-data-start nearby
+python ".\brain_inspired_localization_simulator.py" --export-paper-data --paper-data-profile 40Hz --paper-data-duration-s 7200 --paper-data-path "Circle" --paper-data-start nearby
 ```
 
 Distance precision is enabled by default. Add
@@ -211,7 +211,7 @@ Landmark profiles are built into core as Python data. No JSON loading or landmar
 initialization call is needed. The first profile is selected by default:
 
 ```python
-import brain_inspired_localisation_core as core
+import brain_inspired_localization_core as core
 
 core.set_landmark_profile("9 unique")
 response = core.step_core(request)
@@ -235,7 +235,7 @@ reports actual associations, whether an observation was used, skip reasons,
 precision, Jacobian, J-transpose/P/error terms, update contributions and per-point
 free energy. `diagnostics.settings` records the core settings actually used.
 
-There is one algorithm implementation: `brain_inspired_localisation_core.py`.
+There is one algorithm implementation: `brain_inspired_localization_core.py`.
 It imports only standard-library modules and contains no GUI, sensor simulation,
 or map-file reads. Its built-in profiles are shared with the simulator. The
 simulator sets the selected profile and existing settings, and processes each
@@ -250,17 +250,17 @@ contributions. The prediction GC diagnostic keeps fused analysis aligned with
 the actual post-motion landmark prediction. GUI layout and launch command are
 unchanged; a further physical split of simulation/reports/UI files is optional.
 
-Run `python -m unittest test_core_interface test_localisation_regression test_convergence_symmetry -v`.
+Run `python -m unittest test_core_interface test_localization_regression test_convergence_symmetry -v`.
 
 ## Frozen regression baseline before the landmark refactor
 
 Run the new numerical regression set and the existing convergence tests with:
 
 ```powershell
-python -m unittest test_localisation_regression test_convergence_symmetry -v
+python -m unittest test_localization_regression test_convergence_symmetry -v
 ```
 
-`localisation_regression_baseline.json` records 16 deterministic scenarios from
+`localization_regression_baseline.json` records 16 deterministic scenarios from
 `resolve-symmetry` commit `5402ded`, including the source hashes and explicit
 40 Hz settings. It contains actual/belief generalized coordinates and saved
 sensor observations, not just seeds. Stationary input frames use a repeat count;
@@ -303,7 +303,7 @@ Ordinary test runs only read the baseline. To intentionally establish a new
 reference after reviewing a behavior change, run:
 
 ```powershell
-python test_localisation_regression.py --capture-baseline
+python test_localization_regression.py --capture-baseline
 ```
 
 Do not regenerate it merely to make a failing regression pass. During the
@@ -330,7 +330,7 @@ manual use, but it is no longer exposed as a primary GUI button.
 ## Notes
 
 - The localization algorithm is implemented once, in the `CORE` block of
-  `brain_inspired_localisation_core.py`. Simulator/UI, reports and tests run
+  `brain_inspired_localization_core.py`. Simulator/UI, reports and tests run
   on top of it through explicit initialization and per-frame stepping.
 - The real robot / C++ integration boundary is `step_core(request)`. It
   processes one supplied observation frame at a time and returns the updated

@@ -9,15 +9,15 @@
 
 # Main project files
 !/README.txt
-!/brain inspired localisation.py
-!/brain_inspired_localisation_core.py
+!/brain_inspired_localization_simulator.py
+!/brain_inspired_localization_core.py
 !/global_pose_initialization.py
 !/global_pose_initialization.md
 !/test_global_pose_initialization.py
 !/test_convergence_symmetry.py
-!/test_localisation_regression.py
+!/test_localization_regression.py
 !/test_core_interface.py
-!/localisation_regression_baseline.json
+!/localization_regression_baseline.json
 !/brain_inspired_self_localisation.pdf
 !/step_core_cpp_interface.txt
 
