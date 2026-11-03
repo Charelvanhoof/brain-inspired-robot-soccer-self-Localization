@@ -143,7 +143,21 @@ LANDMARK_SCENARIO_PROFILES = [{'name': '9 ambiguous',
                 {'name': 'left_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
                 {'name': 'right_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
                 {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
-                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]}]
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': 'testRobotsports',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 120.0}]}]
 
 
 def landmark_profile_association_name(profile):
