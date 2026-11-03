@@ -89,6 +89,8 @@ PAPER_VISIBILITY_STRESS_DURATION_S = 2.0 * 60.0 * 60.0
 PAPER_LM_TRIAL_DURATION_S = 30.0
 CONVERGE_TEST_RUNS = 100
 CONVERGE_TEST_USE_REGRESSION_SET = False
+# FCS starting-belief limits for S-NEAR / D-NEAR and future fPI evaluation.
+NEAR_START_LIMITS = {"x_cm": 250.0, "y_cm": 250.0, "angle_deg": 30.0}
 CONV_TOL_X_CM = 3.0
 CONV_TOL_Y_CM = 3.0
 CONV_TOL_ANGLE_DEG = 3.0
@@ -662,6 +664,51 @@ def simulation_inference_step(robots, algorithm_name=ACTIVE_ALGORITHM_NAME):
 
 
 # --- Simulated experiment runner ---
+def run_robustness_trial(actual_start, offset, algorithm_name, initialize_path, step_path,
+                         progress_callback=None):
+    """Execute one supplied start/offset using the selected demo adapter and sensors."""
+    robots = {"actual": make_robot_gc_state(**actual_start)}
+    path = initialize_path(robots["actual"])
+    actual_pose = robot_pose_view(robots["actual"])
+    robots["belief"] = make_robot_gc_state(
+        actual_pose["x_cm"] + offset[0], actual_pose["y_cm"] + offset[1],
+        wrap_rad(actual_pose["theta_rad"] + math.radians(offset[2])),
+    )
+    start_belief = robot_pose_view(robots["belief"])
+    reset_landmark_obstruction_state()
+    reset_motion_slip_state()
+    correct_hits = symmetrical_hits = 0
+    outcome = "timeout"
+    steps = 0
+    for step in range(1, INFER_STEPS_MAX + 1):
+        if progress_callback is not None and (step == 1 or step % 50 == 0):
+            if progress_callback(step, INFER_STEPS_MAX) is False:
+                outcome = "cancelled"
+                break
+        step_path(robots["actual"], path)
+        simulation_inference_step(robots, algorithm_name)
+        steps = step
+        actual_end = robot_pose_view(robots["actual"])
+        belief_end = robot_pose_view(robots["belief"])
+        correct = pose_converged_ros(
+            actual_end, belief_end, CONV_TOL_X_CM, CONV_TOL_Y_CM, CONV_TOL_ANGLE_RAD,
+        )
+        correct_hits = correct_hits + 1 if correct else 0
+        symmetrical_hits = symmetrical_hits + 1 if pose_symmetrically_converged(actual_end, belief_end) else 0
+        if correct_hits >= CONV_REQUIRED_SEQUENTIAL_HITS:
+            outcome = "correct"
+            break
+        if symmetrical_hits >= CONV_REQUIRED_SEQUENTIAL_HITS:
+            outcome = "symmetric"
+            break
+    return {
+        "actual_start": actual_pose, "belief_start": start_belief,
+        "actual_end": robot_pose_view(robots["actual"]),
+        "belief_end": robot_pose_view(robots["belief"]),
+        "outcome": outcome, "steps": steps, "elapsed_s": steps * DT,
+    }
+
+
 def reset_paper_lm_experiment(saved_setup):
     """Create an independent trial at the saved actual/belief poses and path start."""
     from copy import deepcopy
@@ -828,6 +875,13 @@ def robot_generalized_coordinate_view(robot_fcs_gc):
     return robot_gc_view(robot_fcs_gc)
 
 
+def near_start_condition_text(limits=None):
+    """Describe the configured near bounds or a saved report's bounds."""
+    limits = NEAR_START_LIMITS if limits is None else limits
+    return (f"belief dx uniform +/-{limits['x_cm']:g} cm; dy uniform +/-{limits['y_cm']:g} cm; "
+            f"dtheta uniform +/-{limits['angle_deg']:g} deg")
+
+
 def precision_label_for_algorithm(algorithm_name, base_precision=None):
     if base_precision is None:
         base_precision = PI_CAM
@@ -858,6 +912,7 @@ def gain_for_algorithm(algorithm_name):
 
 def experiment_settings(algorithm_name):
     return {
+        "near_start_limits": dict(NEAR_START_LIMITS),
         "noise_enabled": NOISE_ENABLED,
         "noise_x_cm": NOISE_STD_X_CM,
         "noise_y_cm": NOISE_STD_Y_CM,
@@ -1107,6 +1162,38 @@ def learning_rate_report_row(settings):
         f"acc xy={format_display_value(report_value(settings, 'lr_motion_acc_xy', 'motion_lr_acc_xy', MOTION_LR_ACC_XY))}   "
         f"acc a={format_display_value(report_value(settings, 'lr_motion_acc_theta', 'motion_lr_acc_theta', MOTION_LR_ACC_THETA))}"
     )
+
+
+def convergence_condition_report_row(x_cm, y_cm, angle_rad, sequential_hits):
+    return (
+        f"Convergence condition: |dx|<={x_cm:.1f} cm   |dy|<={y_cm:.1f} cm   "
+        f"|dtheta|<={angle_rad:.4f} rad   sequential hits>={sequential_hits}"
+    )
+
+
+def convergence_report_condition_lines(settings):
+    """Format the saved test conditions shared by convergence and scan reports."""
+    if settings["noise_enabled"]:
+        noise_text = (
+            f"Noise: YES   landmarks x={settings['noise_x_cm']:.2f} cm   "
+            f"y={settings['noise_y_cm']:.2f} cm   angle={settings['noise_angle_rad']:.4f} rad   "
+            f"motion={settings.get('motion_noise_ratio', MOTION_NOISE_RATIO) * 100.0:.1f}%"
+        )
+    else:
+        noise_text = "Noise: NO"
+    (odometry_bias_text, slip_text, dropout_text, obstruction_text,
+     viewing_text, association_text, landmark_profile_text) = simulation_settings_report_lines(settings)
+    return [
+        noise_text,
+        odometry_bias_text,
+        slip_text,
+        f"{dropout_text}   |   {obstruction_text}",
+        f"{viewing_text}   |   {association_text}   |   {landmark_profile_text}",
+        f"DT={settings['dt']:.4f}",
+        precision_report_row(settings),
+        precision_distance_modifier_report_row(settings),
+        learning_rate_report_row(settings),
+    ]
 
 
 def paper_lm_profile_counts(metadata):
@@ -1574,11 +1661,525 @@ def plot_experiment(history, algorithm_name="Unknown", paper_ready=False, open_p
     return pdf_path
 
 
+def export_robustness_dataset(config, algorithm_name, initialize_path, step_path,
+                              settings, progress_callback=None, output_dir="reports"):
+    """Stream trials/points to disk; settings_id links every row to its run metadata."""
+    import csv
+
+    robustness_axes(config)
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    base = Path(output_dir).resolve() / f"robustness_{timestamp}"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    paths = {name: str(base) + suffix for name, suffix in (
+        ("trials_path", "_trials.csv"), ("summary_path", "_points.csv"),
+        ("metadata_path", ".json"), ("report_path", "_coarse.pdf"),
+    )}
+    metadata = {
+        "settings_id": base.name, "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "algorithm_name": algorithm_name, "settings": deepcopy(settings), "sweep": dict(config),
+        "start_domain_fcs_cm": {"half_x": FIELD_LENGTH_CM / 2 + 80.0, "half_y": FIELD_WIDTH_CM / 2 + 80.0},
+        "convergence": {"x_cm": CONV_TOL_X_CM, "y_cm": CONV_TOL_Y_CM,
+                        "angle_deg": CONV_TOL_ANGLE_DEG, "sequential_hits": CONV_REQUIRED_SEQUENTIAL_HITS,
+                        "max_steps": INFER_STEPS_MAX, "symmetric_is_failure": True},
+        "sampling": "Uniform actual starts in the intersection where actual and exact-offset belief both fit; shared trial quantiles across offsets",
+        "search_strategy": "angle_spiral_first_failure",
+        "search": "For each heading offset, visit the XY grid in widening square spiral rings from zero. A cell is tested only if its neighbor one index toward zero in each nonzero coordinate passed. Otherwise it is skipped, propagating failed/skipped inner cells outward. Stop a tested cell at its first failed trial.",
+        "status": "running", **paths,
+    }
+    # Demo specs contain Python sampler functions; save their names at the
+    # reporting boundary while the playback adapter keeps the callable spec.
+    metadata["settings"]["demo_path"] = {
+        key: value.__name__ if callable(value) else value
+        for key, value in settings["demo_path"].items()
+    }
+
+    def save_metadata():
+        Path(paths["metadata_path"]).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    save_metadata()
+    trial_fields = ["settings_id", "point_id", "phase", "trial_id", "seed", "dx_cm", "dy_cm", "da_deg",
+                    "outcome", "steps", "elapsed_s"]
+    for pose_name in ("actual_start", "belief_start", "actual_end", "belief_end"):
+        trial_fields.extend(f"{pose_name}_{axis}" for axis in ("x_cm", "y_cm", "theta_rad"))
+    point_fields = ["settings_id", "point_id", "phase", "dx_cm", "dy_cm", "da_deg", "completed",
+                    "correct", "symmetric", "timeout", "convergence_pct", "status",
+                    "blocked_by_dx_cm", "blocked_by_dy_cm"]
+    saved_random_state = random.getstate()
+    try:
+        with open(paths["trials_path"], "w", newline="", encoding="utf-8") as trials_file, open(
+            paths["summary_path"], "w", newline="", encoding="utf-8",
+        ) as points_file:
+            trials_writer = csv.DictWriter(trials_file, fieldnames=trial_fields)
+            points_writer = csv.DictWriter(points_file, fieldnames=point_fields)
+            trials_writer.writeheader()
+            points_writer.writeheader()
+
+            def record_trial(result):
+                row = {key: result[key] for key in trial_fields if key in result}
+                row["settings_id"] = base.name
+                for pose_name in ("actual_start", "belief_start", "actual_end", "belief_end"):
+                    row.update({f"{pose_name}_{key}": value for key, value in result[pose_name].items()})
+                trials_writer.writerow(row)
+                trials_file.flush()
+
+            def record_point(point):
+                points_writer.writerow(dict(point, settings_id=base.name))
+                metadata["completed_points"] = point["point_id"]
+                # Skips run quickly and have no sensor trials to preserve.
+                # Batch their flushes; measured cells still persist immediately.
+                if point["status"] != "skipped" or point["point_id"] % 100 == 0:
+                    points_file.flush()
+                    save_metadata()
+
+            def trial_runner(actual_start, offset, seed, progress):
+                random.seed(seed)
+                return run_robustness_trial(actual_start, offset, algorithm_name,
+                                            initialize_path, step_path, progress)
+
+            result = run_robustness_sweep(config, trial_runner, record_trial, record_point, progress_callback)
+        metadata.update({key: value for key, value in result.items() if key != "points"})
+        metadata["status"] = "cancelled" if result["stopped"] else "complete"
+        save_metadata()
+    except Exception:
+        metadata["status"] = "error"
+        save_metadata()
+        raise
+    finally:
+        random.setstate(saved_random_state)
+        reset_landmark_obstruction_state()
+        reset_motion_slip_state()
+    return dict(result, **paths)
+
+
+def scan_report_condition_lines(metadata):
+    """Describe the test conditions saved with this scan, not current GUI state."""
+    settings = metadata["settings"]
+    convergence = metadata["convergence"]
+    return [
+        f"Algorithm: {metadata['algorithm_name']} | {settings['profile_name']} | Path: {settings['demo_path']['name']}",
+        convergence_condition_report_row(convergence["x_cm"], convergence["y_cm"],
+                                         math.radians(convergence["angle_deg"]), convergence["sequential_hits"]),
+        f"Ball position (FCS): x={settings['ball_fcs']['x_cm']:.1f} cm   y={settings['ball_fcs']['y_cm']:.1f} cm",
+        *convergence_report_condition_lines(settings),
+    ]
+
+
+def export_robustness_angle_view(metadata_path):
+    """Save an offline angle slider over measured coarse dx/dy cells only."""
+    import csv
+
+    metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    config = metadata["sweep"]
+    multiplier = config.get("coarse_multiplier", 1)
+    with open(metadata["summary_path"], newline="", encoding="utf-8") as stream:
+        points = [
+            [float(row["dx_cm"]), float(row["dy_cm"]), float(row["da_deg"]),
+             int(row["correct"]), int(row["completed"]), int(row["symmetric"]), int(row["timeout"]), row["status"]]
+            for row in csv.DictReader(stream)
+            if row.get("phase", "coarse") == "coarse" and row["status"] in {"pass", "fail"}
+        ]
+    data = {
+        "points": points, "stepX": config["step_x_cm"] * multiplier,
+        "stepY": config["step_y_cm"] * multiplier, "runs": config["runs"],
+        "run": metadata["settings_id"], "algorithm": metadata["algorithm_name"],
+        "landmarks": metadata["settings"]["landmark_scenario_profile"],
+        "conditions": scan_report_condition_lines(metadata),
+    }
+    report_path = Path(metadata["report_path"])
+    stem = report_path.stem.removesuffix("_coarse")
+    output_path = report_path.with_name(stem + "_coarse_interactive.html")
+    template = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robustness: angle slices</title>
+<style>
+:root { color-scheme: light dark; --bg:light-dark(#fff,#171b21); --ink:light-dark(#192633,#edf2f7);
+ --muted:light-dark(#536171,#b4c0cc); --grid:light-dark(#d6dce2,#414b58); --unknown:light-dark(#f0f3f6,#252d37);
+ --pass:light-dark(#65bb7d,#4eaa6a); --fail:light-dark(#a3453f,#f08e86); }
+* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:16px system-ui,sans-serif; }
+main { max-width:1040px; margin:24px auto; padding:0 20px 24px; } h1 { font-size:24px; font-weight:600; margin:0 0 8px; }
+.secondary { color:var(--muted); font-size:14px; } .control { margin:24px 0 12px; } .row { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+label { font-size:19px; } output { font-variant-numeric:tabular-nums; font-weight:600; } input { width:100%; margin:14px 0 0; accent-color:var(--pass); min-height:32px; }
+.ends { display:flex; justify-content:space-between; } .legend { display:flex; gap:20px; flex-wrap:wrap; margin:14px 0 8px; font-size:14px; }
+.key { display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:6px; } .green { background:var(--pass); }
+.gray { background:var(--unknown); border:1px solid var(--grid); } .cross { color:var(--fail); font-weight:600; }
+svg { display:block; width:100%; touch-action:pan-y; } svg text { fill:var(--ink); font:13px system-ui,sans-serif; }
+.detail { min-height:44px; margin:8px 0; font-variant-numeric:tabular-nums; } .note { max-width:78ch; line-height:1.5; }
+</style></head><body><main id="robustness-angle-view">
+<h1>Where does every trial converge?</h1>
+<div id="settings" class="secondary"></div>
+<div class="secondary" style="margin-top:12px;line-height:1.6"><strong>Test conditions</strong><div id="test-conditions"></div></div>
+<div class="control"><div class="row"><label for="angle">FCS heading offset Δa: <output id="angle-value">0°</output></label>
+<span id="slice-count" class="secondary" aria-live="polite"></span></div>
+<input id="angle" type="range" min="0" step="1" aria-label="FCS heading offset in degrees">
+<div class="ends secondary"><span id="angle-min"></span><span>0°</span><span id="angle-max"></span></div></div>
+<div class="legend"><span><i class="key green"></i>100% correct</span><span><b class="cross">×</b> Below 100% (symmetric = fail)</span>
+<span><i class="key gray"></i>Skipped / untested</span></div>
+<div id="plot"><svg id="map" role="img" aria-label="Convergence map: FCS delta x horizontal and delta y vertical, zero at the center"></svg></div>
+<div id="detail" class="detail" aria-live="polite">Hover or tap a tested cell for its result.</div>
+<div class="secondary note">The center is zero position error: Δx = Δy = 0. Solid green cells passed all N trials; failed cells stop at the first failure.
+Gray means not tested: once an inner cell fails, cells farther out behind it are skipped rather than tested and found to fail.
+Offsets are relative to each trial’s actual start, rather than absolute positions on the soccer field.</div>
+<div id="run" class="secondary" style="margin-top:16px"></div>
+</main><script id="robustness-data" type="application/json">__ROBUSTNESS_DATA__</script>
+<script>
+(() => {
+ const root=document.getElementById('robustness-angle-view');
+ const data=JSON.parse(document.getElementById('robustness-data').textContent);
+ const get=id=>root.querySelector('#'+id), svg=get('map'), slider=get('angle');
+ const angles=[...new Set(data.points.map(p=>p[2]))].sort((a,b)=>a-b);
+ const xs=[...new Set(data.points.map(p=>p[0]))].sort((a,b)=>a-b);
+ const ys=[...new Set(data.points.map(p=>p[1]))].sort((a,b)=>a-b);
+ const halfX=Math.max(data.stepX,...xs.map(Math.abs))+data.stepX;
+ const halfY=Math.max(data.stepY,...ys.map(Math.abs))+data.stepY;
+ const bounds=(values,step)=>new Map(values.map((v,i)=>[v,[
+   v-Math.min(step/2,i ? (v-values[i-1])/2 : step/2),
+   v+Math.min(step/2,i<values.length-1 ? (values[i+1]-v)/2 : step/2)]]));
+ const xb=bounds(xs,data.stepX), yb=bounds(ys,data.stepY);
+ const format=value=>(value>0?'+':'')+value;
+ get('settings').textContent=`Up to ${data.runs} random-start trials per offset · ${data.stepX} × ${data.stepY} cm cells`;
+ for(const line of data.conditions) {
+   const row=document.createElement('div');row.textContent=line;get('test-conditions').append(row);
+ }
+ get('run').textContent=data.run;
+ slider.max=Math.max(0,angles.length-1); slider.value=Math.max(0,angles.indexOf(0));
+ slider.disabled=angles.length<2;
+ get('angle-min').textContent=angles.length?format(angles[0])+'°':'No completed samples';
+ get('angle-max').textContent=angles.length?format(angles[angles.length-1])+'°':'';
+ const ns='http://www.w3.org/2000/svg';
+ function add(tag,attrs,text,parent=svg) {
+   const el=document.createElementNS(ns,tag);
+   for(const [key,value] of Object.entries(attrs))el.setAttribute(key,value);
+   if(text!==undefined)el.textContent=text;parent.append(el);return el;
+ }
+ function draw() {
+   const angle=angles[Number(slider.value)], selected=data.points.filter(p=>p[2]===angle);
+   get('angle-value').textContent=angle===undefined?'—':format(angle)+'°';
+   slider.setAttribute('aria-valuetext',angle===undefined?'No samples':`${angle} degrees`);
+   get('slice-count').textContent=`${selected.filter(p=>p[7]==='pass').length} of ${selected.length} tested offsets at 100%`;
+   get('detail').textContent='Hover or tap a tested cell for its result.';
+   const width=Math.max(300,get('plot').clientWidth), height=width<500?510:650;
+   const margin={left:66,right:22,top:24,bottom:52};
+   const left=margin.left,top=margin.top,w=width-left-margin.right,h=height-top-margin.bottom;
+   const cx=left+w/2,cy=top+h/2,scale=Math.min(w/(2*halfX),h/(2*halfY));
+   const X=x=>cx+x*scale,Y=y=>cy-y*scale;
+   svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.replaceChildren();
+   add('title',{},`Correct convergence at heading offset ${angle} degrees`);
+   add('rect',{x:left,y:top,width:w,height:h,fill:'var(--unknown)',stroke:'var(--grid)'});
+   // Render only measured cells. Missing conditions retain the unknown fill.
+   for(const p of selected) {
+     const [loX,hiX]=xb.get(p[0]),[loY,hiY]=yb.get(p[1]),pass=p[7]==='pass';
+     const rect=add('rect',{x:X(loX),y:Y(hiY),width:(hiX-loX)*scale,height:(hiY-loY)*scale,
+       fill:pass?'var(--pass)':'var(--bg)','data-dx':p[0],'data-dy':p[1],'data-pass':pass});
+     const verdict=pass?`100% (${p[3]}/${p[4]} correct)`:`Below 100%; ${p[4]} trials attempted; ${p[5]} symmetric; ${p[6]} fail`;
+     const detail=`Δx ${format(p[0])} cm · Δy ${format(p[1])} cm · Δa ${format(p[2])}°: ${verdict}.`;
+     add('title',{},detail,rect);
+     rect.addEventListener('pointerenter',()=>get('detail').textContent=detail);
+     rect.addEventListener('click',()=>get('detail').textContent=detail);
+     if(!pass) {
+       const r=Math.max(1,Math.min(3,data.stepX*scale/3));
+       add('path',{d:`M${X(p[0])-r},${Y(p[1])-r}l${2*r},${2*r}m${-2*r},0l${2*r},${-2*r}`,
+         stroke:'var(--fail)','stroke-width':1.2,'pointer-events':'none'});
+     }
+   }
+   const tick=width<500?1000:500;
+   for(let x=Math.ceil(-halfX/tick)*tick;x<=halfX;x+=tick) {
+     add('line',{x1:X(x),y1:top,x2:X(x),y2:top+h,stroke:'var(--grid)','stroke-width':0.5,'pointer-events':'none'});
+     add('text',{x:X(x),y:top+h+22,'text-anchor':'middle'},String(x));
+   }
+   for(let y=Math.ceil(-halfY/tick)*tick;y<=halfY;y+=tick) {
+     add('line',{x1:left,y1:Y(y),x2:left+w,y2:Y(y),stroke:'var(--grid)','stroke-width':0.5,'pointer-events':'none'});
+     add('text',{x:left-10,y:Y(y)+4,'text-anchor':'end'},String(y));
+   }
+   add('line',{x1:left,y1:cy,x2:left+w,y2:cy,stroke:'var(--ink)','stroke-width':1,'pointer-events':'none'});
+   add('line',{x1:cx,y1:top,x2:cx,y2:top+h,stroke:'var(--ink)','stroke-width':1,'pointer-events':'none'});
+   add('circle',{cx,cy,r:4,fill:'var(--bg)',stroke:'var(--ink)','pointer-events':'none'});
+   add('text',{x:cx+8,y:cy-10},'(0, 0)');
+   add('text',{x:cx,y:height-8,'text-anchor':'middle','data-axis':'x'},'FCS Δx (cm)');
+   add('text',{transform:`translate(17 ${cy}) rotate(-90)`,'text-anchor':'middle','data-axis':'y'},'FCS Δy (cm)');
+ }
+ slider.addEventListener('input',draw);
+ new ResizeObserver(draw).observe(get('plot'));draw();
+})();
+</script></body></html>'''
+    output_path.write_text(template.replace("__ROBUSTNESS_DATA__", json.dumps(data).replace("<", "\\u003c")), encoding="utf-8")
+    return str(output_path)
+
+
+def plot_robustness_report(metadata_path, open_pdf=True, show_plot=True):
+    """Report coarse samples only, including from older mixed-resolution datasets."""
+    import csv
+    import os
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.colors import Normalize, ListedColormap
+    from matplotlib.cm import ScalarMappable
+
+    metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    with open(metadata["summary_path"], newline="", encoding="utf-8") as stream:
+        saved_points = list(csv.DictReader(stream))
+    points = [point for point in saved_points if point.get("phase", "coarse") == "coarse"]
+    report_status = "coarse search complete" if any(p.get("phase") == "fine" for p in saved_points) else metadata["status"]
+    report_path = Path(metadata["report_path"])
+    if not report_path.stem.endswith("_coarse"):
+        report_path = report_path.with_name(report_path.stem + "_coarse.pdf")
+    complete = [point for point in points if point["status"] in {"pass", "fail"}]
+    skipped = sum(point["status"] == "skipped" for point in points)
+    incomplete = sum(point["status"] == "incomplete" for point in points)
+    passed = sum(point["status"] == "pass" for point in complete)
+    config, settings = metadata["sweep"], metadata["settings"]
+    norm = Normalize(0, 1)
+    cmap = ListedColormap(["#b9574f", "#53aa70"])
+    fig = plt.figure(figsize=(11.7, 8.3))
+    ax = fig.add_subplot(111, projection="3d")
+    styles = (
+        ("coarse", "pass", "o", "Coarse: 100% correct", 14),
+        ("coarse", "fail", "x", "Coarse: below 100%", 24),
+    )
+    for phase, status, marker, label, size in styles:
+        group = [point for point in complete if point["status"] == status and point.get("phase", "coarse") == phase]
+        if group:
+            ax.scatter([float(p["dx_cm"]) for p in group], [float(p["dy_cm"]) for p in group],
+                       [float(p["da_deg"]) for p in group], c=[int(p["status"] == "pass") for p in group],
+                       cmap=cmap, norm=norm, marker=marker, s=size, alpha=0.8, label=label)
+    if complete:
+        ax.legend(loc="upper left", fontsize=8)
+    else:
+        ax.text2D(0.1, 0.9, "No completed grid points", transform=ax.transAxes)
+    ax.set(xlabel="FCS delta x (cm)", ylabel="FCS delta y (cm)", zlabel="FCS delta a (deg)")
+    fig.suptitle(f"Coarse robustness: {passed}/{len(complete)} tested points at 100% correct\n"
+                 f"Up to {int(config['runs'])} random-start trials per point | {report_status}", y=0.98, fontsize=12)
+    fig.text(0.07, 0.89, "\n".join(scan_report_condition_lines(metadata)), va="top", fontsize=8, linespacing=1.3)
+    colorbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, shrink=0.6, pad=0.12,
+                           ticks=[0, 1], label="Convergence verdict")
+    colorbar.ax.set_yticklabels(["Below 100%", "100%"])
+    fig.text(0.07, 0.04, "Coarse samples only; symmetric convergence is failure. No fine refinement.\n"
+             "Only plotted cells are measured. Skipped and untested cells are not measured failures.", fontsize=9)
+    fig.subplots_adjust(bottom=0.14, top=0.65)
+    with PdfPages(report_path) as pdf:
+        pdf.savefig(fig)
+        # Show the three coordinate planes through zero without inventing values
+        # between tested samples or filling unexplored space as a failure.
+        slices, axes = plt.subplots(1, 3, figsize=(11.7, 4.8))
+        for axis, fixed, horizontal, vertical, title in (
+            (axes[0], "da_deg", "dx_cm", "dy_cm", "delta a = 0 deg"),
+            (axes[1], "dy_cm", "dx_cm", "da_deg", "delta y = 0 cm"),
+            (axes[2], "dx_cm", "dy_cm", "da_deg", "delta x = 0 cm"),
+        ):
+            group = [point for point in complete if float(point[fixed]) == 0.0]
+            for phase, status, marker, label, size in styles:
+                selected = [point for point in group if point["status"] == status and point.get("phase", "coarse") == phase]
+                axis.scatter([float(p[horizontal]) for p in selected], [float(p[vertical]) for p in selected],
+                             c=[int(p["status"] == "pass") for p in selected], marker=marker,
+                             cmap=cmap, norm=norm, s=30)
+            labels = {"dx_cm": "FCS delta x (cm)", "dy_cm": "FCS delta y (cm)", "da_deg": "FCS delta a (deg)"}
+            axis.set(title=title, xlabel=labels[horizontal], ylabel=labels[vertical])
+            axis.grid(alpha=0.2)
+        slices.suptitle("Coarse central slices: circles = 100%; crosses = below 100%; blank = untested")
+        slices.subplots_adjust(left=0.08, right=0.88, bottom=0.18, top=0.83, wspace=0.5)
+        colorbar = slices.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=list(axes),
+                                   ticks=[0, 1], label="Convergence verdict")
+        colorbar.ax.set_yticklabels(["Below 100%", "100%"])
+        pdf.savefig(slices)
+        plt.close(slices)
+        details = [
+            "Robustness test settings", "", f"Run: {metadata['settings_id']}",
+            f"Algorithm: {metadata['algorithm_name']} | Status: {report_status}",
+            f"Complete points: {len(complete)} | 100%: {passed} | Below 100%: {len(complete) - passed}",
+            f"Incomplete points: {incomplete} | Skipped cells: {skipped} (excluded from graph and pass/fail counts)",
+            "100% means all sampled trials passed; it is not a guarantee for every possible start.",
+            "Both starts: field plus 80 cm on each side. Later motion is unrestricted by this start domain.",
+            "Each offset samples uniformly from its admissible actual-start region; that region varies by offset.",
+            "Search: " + metadata["search"],
+            "A passing cell requires all N trials. New searches stop failed cells at their first failed trial; no failure rate is estimated.",
+            "No refinement; failures between sampled offsets can be missed. Historical fine samples are excluded.",
+            "Coarse spacing: " + " / ".join(f"{config[key] * config.get('coarse_multiplier', 1):g}" for key in
+                                            ("step_x_cm", "step_y_cm", "step_angle_deg")) + " (cm / cm / deg).",
+            "Search ends at failures or configured range limits; limits are not measured failure boundaries.",
+            "Convergence: " + json.dumps(metadata["convergence"]),
+            "Sweep: " + json.dumps(config), "", "Simulation settings:",
+        ]
+        details.extend(f"{key}: {value}" for key, value in settings.items())
+        lines = [line for detail in details for line in (textwrap.wrap(detail, 112) or [""])]
+        for start in range(0, len(lines), 44):
+            page = plt.figure(figsize=(11.7, 8.3))
+            page.text(0.06, 0.95, "\n".join(lines[start:start + 44]), va="top", fontsize=9,
+                      family="monospace", linespacing=1.35)
+            pdf.savefig(page)
+            plt.close(page)
+    plt.close(fig)
+    angle_view_path = export_robustness_angle_view(metadata_path)
+    if show_plot:
+        import webbrowser
+        webbrowser.open(Path(angle_view_path).resolve().as_uri())
+    elif open_pdf:
+        os.startfile(str(report_path))
+    return str(report_path)
+
+
 # =========================
 # CONVERGENCE TESTS
 # Standalone block on top of the core experiment runner.
 # Uses the core `run_experiment(...)` in background mode without UI updates.
 # =========================
+def robustness_sweep_defaults():
+    return {
+        "runs": CONVERGE_TEST_RUNS, "step_x_cm": 50.0, "step_y_cm": 50.0,
+        "step_angle_deg": 15.0, "max_x_cm": 1000.0,
+        "max_y_cm": 1000.0, "max_angle_deg": 180.0,
+        "seed": 1,
+    }
+
+
+def robustness_axes(config):
+    """Signed FCS offset lattice; +/-180 degrees are the same condition."""
+    if int(config["runs"]) != config["runs"] or config["runs"] < 1:
+        raise ValueError("Trials per point must be a positive integer")
+    if int(config["seed"]) != config["seed"]:
+        raise ValueError("Seed must be an integer")
+    axes = []
+    for step_key, max_key, limit in (
+        ("step_x_cm", "max_x_cm", FIELD_LENGTH_CM + 160.0),
+        ("step_y_cm", "max_y_cm", FIELD_WIDTH_CM + 160.0),
+        ("step_angle_deg", "max_angle_deg", 180.0),
+    ):
+        step, maximum = config[step_key], config[max_key]
+        if not math.isfinite(step) or step <= 0 or not math.isfinite(maximum) or not 0 <= maximum <= limit:
+            raise ValueError(f"{step_key}: positive step; {max_key}: between 0 and {limit:g}")
+        count = int(math.floor(maximum / step + 1e-10))
+        axis = [round(i * step, 10) for i in range(-count, count + 1)]
+        # Include the configured start-domain limits even when the coarse step
+        # does not divide them exactly (for example, +/-1960 cm with 50 cm).
+        if maximum > axis[-1]:
+            axis = [-maximum] + axis + [maximum]
+        if max_key == "max_angle_deg" and axis[-1] == 180.0:
+            axis.pop()
+        axes.append(axis)
+    return axes
+
+
+def robustness_spiral_indices(axes):
+    """Visit every bounded XY grid cell once, in widening square spiral rings."""
+    center_x, center_y = (axis.index(0.0) for axis in axes[:2])
+    yield center_x, center_y
+    rings = max(center_x, center_y, len(axes[0]) - center_x - 1, len(axes[1]) - center_y - 1)
+    for radius in range(1, rings + 1):
+        # Walk right edge upward, top edge leftward, left edge downward,
+        # and bottom edge rightward. Corners belong to exactly one edge.
+        edges = (
+            ((radius, y) for y in range(-radius + 1, radius + 1)),
+            ((x, radius) for x in range(radius - 1, -radius - 1, -1)),
+            ((-radius, y) for y in range(radius - 1, -radius - 1, -1)),
+            ((x, -radius) for x in range(-radius + 1, radius + 1)),
+        )
+        for edge in edges:
+            for x, y in edge:
+                index = (center_x + x, center_y + y)
+                if 0 <= index[0] < len(axes[0]) and 0 <= index[1] < len(axes[1]):
+                    yield index
+
+
+def run_robustness_sweep(config, trial_runner, record_trial, record_point, progress_callback=None):
+    """Spiral outward per heading, skipping cells behind failed/skipped inner cells.
+
+    Map positions are sampled N times per offset, never gridded. Reuse random
+    quantiles across offsets, mapped into each offset's admissible start region.
+    trial_runner owns simulated execution; callbacks stream forensic records.
+    """
+    axes = robustness_axes(config)
+    points = []
+    angles_completed = 0
+    stopped = False
+    half_x, half_y = FIELD_LENGTH_CM / 2 + 80.0, FIELD_WIDTH_CM / 2 + 80.0
+
+    def evaluate(offset):
+        nonlocal stopped
+        phase = "coarse"
+        dx, dy, da = offset
+        point_id = len(points) + 1
+        point = {
+            "point_id": point_id, "phase": phase, "dx_cm": dx, "dy_cm": dy, "da_deg": da,
+            "completed": 0, "correct": 0, "symmetric": 0, "timeout": 0,
+            "blocked_by_dx_cm": None, "blocked_by_dy_cm": None,
+        }
+        x_low, x_high = max(-half_x, -half_x - dx), min(half_x, half_x - dx)
+        y_low, y_high = max(-half_y, -half_y - dy), min(half_y, half_y - dy)
+        for trial in range(int(config["runs"])):
+            # The same numbered trial has the same quantiles and sensor seed
+            # at every offset. Different offsets have different admissible areas.
+            rng = random.Random(int(config["seed"]) + trial)
+            actual_start = {
+                "x_cm": rng.uniform(x_low, x_high), "y_cm": rng.uniform(y_low, y_high),
+                "theta_rad": rng.uniform(-math.pi, math.pi),
+            }
+            trial_seed = rng.getrandbits(64)
+
+            def progress(step, maximum):
+                if progress_callback is not None:
+                    return progress_callback(point_id, (dx, dy, da), trial + 1,
+                                             int(config["runs"]), step, maximum, phase)
+
+            if progress(0, INFER_STEPS_MAX) is False:
+                stopped = True
+                break
+            result = trial_runner(actual_start, (dx, dy, da), trial_seed, progress)
+            record_trial(dict(result, point_id=point_id, phase=phase, trial_id=trial + 1,
+                              seed=trial_seed, dx_cm=dx, dy_cm=dy, da_deg=da))
+            if result["outcome"] == "cancelled":
+                stopped = True
+                break
+            point["completed"] += 1
+            point[result["outcome"]] += 1
+            if result["outcome"] != "correct":
+                break
+        point["status"] = (
+            "fail" if point["symmetric"] or point["timeout"] else
+            "incomplete" if point["completed"] < config["runs"] else
+            "pass" if point["correct"] == config["runs"] else "fail"
+        )
+        # Failed cells have a binary verdict, not an estimated success rate.
+        point["convergence_pct"] = 100.0 if point["status"] == "pass" else None
+        points.append(point)
+        record_point(point)
+        return point
+
+    for heading in sorted(axes[2], key=lambda value: (abs(value), value)):
+        center = tuple(axis.index(0.0) for axis in axes[:2])
+        statuses = {}
+        for index in robustness_spiral_indices(axes):
+            offset = (axes[0][index[0]], axes[1][index[1]], heading)
+            # This diagonal/axial neighbor is one step nearer zero on each
+            # nonzero coordinate and always belongs to the previous ring.
+            inner = tuple(i - ((i > zero) - (i < zero)) for i, zero in zip(index, center))
+            if index != center and statuses[inner] != "pass":
+                point = {
+                    "point_id": len(points) + 1, "phase": "coarse", "dx_cm": offset[0],
+                    "dy_cm": offset[1], "da_deg": heading, "completed": 0, "correct": 0,
+                    "symmetric": 0, "timeout": 0, "convergence_pct": None, "status": "skipped",
+                    "blocked_by_dx_cm": axes[0][inner[0]], "blocked_by_dy_cm": axes[1][inner[1]],
+                }
+                points.append(point)
+                record_point(point)
+                # Keep cancellation responsive even when a large region is
+                # skipped without running any simulation steps.
+                if progress_callback is not None and point["point_id"] % 100 == 0:
+                    if progress_callback(point["point_id"], offset, 0, int(config["runs"]), 0,
+                                         INFER_STEPS_MAX, "coarse") is False:
+                        stopped = True
+            else:
+                point = evaluate(offset)
+            statuses[index] = point["status"]
+            if stopped:
+                break
+        if stopped:
+            break
+        angles_completed += 1
+
+    return {"points": points, "stopped": stopped,
+            "tested_points": sum(p["status"] in {"pass", "fail"} for p in points),
+            "skipped_points": sum(p["status"] == "skipped" for p in points),
+            "angles_completed": angles_completed, "angles_total": len(axes[2]),
+            "grid_shape": [len(axis) for axis in axes]}
+
+
 def random_pose_near_field(rng=None):
     rng = random if rng is None else rng
     halfL = FIELD_LENGTH_CM / 2
@@ -1619,16 +2220,18 @@ def random_pose_outside_corner(rng=None):
     }
 
 
-def random_nearby_belief_pose(actual_pose, max_offset_cm=70.0, max_angle_offset_deg=20.0, rng=None):
+def random_nearby_belief_pose(actual_pose, rng=None, near_start_limits=None):
+    """Sample default or per-run near offsets in FCS, retaining the field clamp."""
     rng = random if rng is None else rng
+    limits = NEAR_START_LIMITS if near_start_limits is None else near_start_limits
     halfL = FIELD_LENGTH_CM / 2
     halfW = FIELD_WIDTH_CM / 2
 
-    dx = rng.uniform(-max_offset_cm, max_offset_cm)
-    dy = rng.uniform(-max_offset_cm, max_offset_cm)
+    dx = rng.uniform(-limits["x_cm"], limits["x_cm"])
+    dy = rng.uniform(-limits["y_cm"], limits["y_cm"])
     x = min(halfL, max(-halfL, actual_pose["x"] + dx))
     y = min(halfW, max(-halfW, actual_pose["y"] + dy))
-    dtheta = math.radians(rng.uniform(-max_angle_offset_deg, max_angle_offset_deg))
+    dtheta = math.radians(rng.uniform(-limits["angle_deg"], limits["angle_deg"]))
     theta = wrap_rad(actual_pose["theta"] + dtheta)
     return {"x": x, "y": y, "theta": theta}
 
@@ -1642,11 +2245,11 @@ def is_pose_outside_field(pose):
     )
 
 
-def make_converge_start_pair(start_mode, rng=None):
+def make_converge_start_pair(start_mode, rng=None, near_start_limits=None):
     rng = random if rng is None else rng
     if start_mode == "nearby":
         actual_start = random_pose_inside_field(rng)
-        belief_start = random_nearby_belief_pose(actual_start, max_offset_cm=50.0, rng=rng)
+        belief_start = random_nearby_belief_pose(actual_start, rng=rng, near_start_limits=near_start_limits)
     elif start_mode == "outside_corner":
         actual_start = random_pose_outside_corner(rng)
         belief_start = random_pose_near_field(rng)
@@ -2099,6 +2702,7 @@ def run_converge_test(
     trial_specs=None,
     collect_failures=True,
     stop_check=None,
+    near_start_limits=None,
 ):
     converged = 0
     non_converged_symmetrical = 0
@@ -2107,6 +2711,7 @@ def run_converge_test(
     last_history = []
     trial_steps = []
     converged_steps = []
+    near_start_limits = dict(NEAR_START_LIMITS if near_start_limits is None else near_start_limits)
     stopped = False
 
     if start_cases is not None:
@@ -2127,7 +2732,7 @@ def run_converge_test(
             break
 
         if trial_specs[i] is None:
-            actual_start, belief_start = make_converge_start_pair(start_mode)
+            actual_start, belief_start = make_converge_start_pair(start_mode, near_start_limits=near_start_limits)
         else:
             actual_start = dict(trial_specs[i]["actual_start"])
             belief_start = dict(trial_specs[i]["belief_start"])
@@ -2158,6 +2763,9 @@ def run_converge_test(
             step_callback=(lambda: False if stop_check is not None and stop_check() else None) if stop_check is not None else None,
             callback_interval=25,
         )
+        if history:
+            # Per-step snapshots share this settings dictionary.
+            history[0]["settings"]["near_start_limits"] = dict(near_start_limits)
         last_history = history
         steps_taken = len(history)
         trial_steps.append(steps_taken)
@@ -2217,6 +2825,7 @@ def run_converge_test(
         "failures": failures,
         "last_history": last_history,
         "start_mode": start_mode,
+        "near_start_limits": near_start_limits,
         "stopped": stopped,
     }
 
@@ -2245,15 +2854,14 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
         f"Converged: {converged}    Non-converged-symmetrical: {non_converged_symmetrical}    "
         f"Non-converged: {non_converged}"
     )
-    convergence_condition_text = (
-        f"Convergence condition: |dx|<={CONV_TOL_X_CM:.1f} cm   |dy|<={CONV_TOL_Y_CM:.1f} cm   "
-        f"|dtheta|<={CONV_TOL_ANGLE_RAD:.4f} rad   sequential hits>={CONV_REQUIRED_SEQUENTIAL_HITS}"
-    )
+    convergence_condition_text = convergence_condition_report_row(
+        CONV_TOL_X_CM, CONV_TOL_Y_CM, CONV_TOL_ANGLE_RAD, CONV_REQUIRED_SEQUENTIAL_HITS)
     last_history = report.get("last_history", [])
     if last_history:
         settings = last_history[0].get("settings", experiment_settings(algorithm_name))
     else:
         settings = experiment_settings(algorithm_name)
+    near_condition = near_start_condition_text(report.get("near_start_limits", settings.get("near_start_limits", NEAR_START_LIMITS)))
 
     failures_per_page = 3
     total_failures = len(failures)
@@ -2264,7 +2872,7 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
         mode_label = "Dynamic Demo Converge Test"
         demo_path_name = report.get("demo_path_name", "Unknown")
         if start_mode == "dynamic_demo_nearby":
-            start_condition_text = f"Start condition: moving actual robot on demo path '{demo_path_name}'; belief dx,dy uniform +/-50 cm; dtheta uniform +/-20 deg"
+            start_condition_text = f"Start condition: moving actual robot on demo path '{demo_path_name}'; {near_condition}"
         else:
             start_condition_text = f"Start condition: moving actual robot on demo path '{demo_path_name}'; actual and belief independently random near field"
         start_condition_text += (
@@ -2273,7 +2881,7 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
         )
     elif start_mode == "nearby":
         mode_label = "Landmark Converge Nearby"
-        start_condition_text = "Start condition: landmark-only static actual pose; belief dx,dy uniform +/-50 cm; dtheta uniform +/-20 deg"
+        start_condition_text = f"Start condition: landmark-only static actual pose; {near_condition}"
     elif start_mode == "outside_corner":
         mode_label = "Landmark Converge Outside Corner"
         start_condition_text = "Start condition: landmark-only static actual outside corner; belief random near field"
@@ -2287,15 +2895,6 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
     os.makedirs(reports_dir, exist_ok=True)
     pdf_path = os.path.join(reports_dir, f"{start_mode}_converge_test_report_{timestamp_file}.pdf")
 
-    if settings["noise_enabled"]:
-        noise_text = (
-            f"Noise: YES   landmarks x={settings['noise_x_cm']:.2f} cm   "
-            f"y={settings['noise_y_cm']:.2f} cm   angle={settings['noise_angle_rad']:.4f} rad   "
-            f"motion={settings.get('motion_noise_ratio', MOTION_NOISE_RATIO) * 100.0:.1f}%"
-        )
-    else:
-        noise_text = "Noise: NO"
-
     if mean_steps is None or sd_steps is None or max_steps is None or p95_steps is None or p99_steps is None:
         step_stats_text = "Steps to converge (converged cases only): n/a"
     else:
@@ -2303,15 +2902,7 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
 
     halfW = FIELD_WIDTH_CM / 2
     halfL = FIELD_LENGTH_CM / 2
-    (
-        odometry_bias_text,
-        slip_text,
-        dropout_text,
-        obstruction_text,
-        viewing_text,
-        association_text,
-        landmark_profile_text,
-    ) = simulation_settings_report_lines(settings)
+    condition_text = "\n".join(convergence_report_condition_lines(settings))
 
     def draw_field_snapshot(ax, actual_pose, belief_pose, title, history=None):
         ax.set_title(title, fontsize=7)
@@ -2384,15 +2975,7 @@ def plot_converge_test_report(report, algorithm_name="Unknown"):
                     f"{convergence_condition_text}\n"
                     f"{step_stats_text}\n"
                     f"{start_condition_text}\n"
-                    f"{noise_text}\n"
-                    f"{odometry_bias_text}\n"
-                    f"{slip_text}\n"
-                    f"{dropout_text}   |   {obstruction_text}\n"
-                    f"{viewing_text}   |   {association_text}   |   {landmark_profile_text}\n"
-                    f"DT={settings['dt']:.4f}\n"
-                    f"{precision_report_row(settings)}\n"
-                    f"{precision_distance_modifier_report_row(settings)}\n"
-                    f"{learning_rate_report_row(settings)}"
+                    f"{condition_text}"
                 )
             else:
                 header = f"{mode_label}   |   Time: {timestamp}"
@@ -3607,6 +4190,7 @@ def run_dynamic_converge_test(
     look_target_y_cm=0.0,
     profile_name=None,
     stop_check=None,
+    near_start_limits=None,
 ):
     converged = 0
     non_converged_symmetrical = 0
@@ -3615,6 +4199,7 @@ def run_dynamic_converge_test(
     last_history = []
     trial_steps = []
     converged_steps = []
+    near_start_limits = dict(NEAR_START_LIMITS if near_start_limits is None else near_start_limits)
     stopped = False
     demo_path_name = demo_paths[selected_demo_idx]["name"]
 
@@ -3633,7 +4218,7 @@ def run_dynamic_converge_test(
             break
 
         if trial_specs[i] is None:
-            actual_start, belief_start = make_converge_start_pair(start_mode)
+            actual_start, belief_start = make_converge_start_pair(start_mode, near_start_limits=near_start_limits)
         else:
             actual_start = dict(trial_specs[i]["actual_start"])
             belief_start = dict(trial_specs[i]["belief_start"])
@@ -3663,6 +4248,7 @@ def run_dynamic_converge_test(
         start_actual = robot_pose_view(robots["actual"])
         start_belief = robot_pose_view(robots["belief"])
         settings = experiment_settings(algorithm_name)
+        settings["near_start_limits"] = dict(near_start_limits)
         if profile_name is not None:
             settings["profile_name"] = profile_name
         settings["demo_path_name"] = demo_path_name
@@ -3756,6 +4342,7 @@ def run_dynamic_converge_test(
         "failures": failures,
         "last_history": last_history,
         "start_mode": f"dynamic_demo_{start_mode}",
+        "near_start_limits": near_start_limits,
         "demo_path_name": demo_path_name,
         "look_target_x_cm": look_target_x_cm,
         "look_target_y_cm": look_target_y_cm,
@@ -3901,6 +4488,124 @@ def draw_tooltip(screen, text, mouse_pos, font):
     screen.blit(surf, (rect.x + padding_x, rect.y + padding_y))
 
 
+def convergence_setup_dialog(screen, config, settings, near_test=None):
+    """Edit scan or near-run parameters; return None to cancel, False to quit."""
+    fields = [
+        ("x_cm", "Maximum |delta x| (cm)"), ("y_cm", "Maximum |delta y| (cm)"),
+        ("angle_deg", "Maximum |delta a| (deg)"),
+    ] if near_test else [
+        ("runs", "Max trials per offset (N)"), ("step_x_cm", "Delta x step (cm)"),
+        ("step_y_cm", "Delta y step (cm)"), ("step_angle_deg", "Delta a step (deg)"),
+        ("max_x_cm", "Maximum |delta x| (cm)"), ("max_y_cm", "Maximum |delta y| (cm)"),
+        ("max_angle_deg", "Maximum |delta a| (deg)"),
+    ]
+    values = [format_display_value(config[key]) for key, _ in fields]
+    active, replace, error = 0, True, ""
+    font = pygame.font.SysFont("consolas", 15)
+    bold = pygame.font.SysFont("consolas", 17, bold=True)
+    on_off = lambda enabled: "ON" if enabled else "OFF"
+    inherited_lines = [
+        f"Algorithm: {settings['algorithm_name']} | {settings['profile_name']} | "
+        f"Path: {'Static' if near_test == 'S-NEAR' else settings['demo_path']['name']}",
+        f"Landmarks: {settings['landmark_scenario_profile']}",
+        f"FoV: {on_off(settings['viewing_angle_enabled'])} ({settings['viewing_angle_deg']:g} deg) | "
+        f"Noise: {on_off(settings['noise_enabled'])} ({settings['noise_x_cm']:g} cm; motion {settings['motion_noise_ratio']:.0%})",
+        f"Dropout: {on_off(settings['landmark_dropout_enabled'])} ({settings['landmark_dropout_probability']:.0%}) | "
+        f"Obstruction: {on_off(settings['landmark_obstruction_enabled'])} | Slip: {on_off(settings['motion_slip_enabled'])}",
+        f"Odom bias: {on_off(settings['odometry_bias_enabled'])}",
+        f"Distance precision modifier: {on_off(settings['precision_distance_modifier_enabled'])}",
+    ]
+    if near_test != "S-NEAR":
+        inherited_lines.append(f"Ball: x={settings['ball_fcs']['x_cm']:g}, y={settings['ball_fcs']['y_cm']:g} cm")
+    panel = pygame.Rect(0, 0, min(650, screen.get_width() - 20), min(450 if near_test else 625, screen.get_height() - 20))
+    panel.center = screen.get_rect().center
+    rects = [pygame.Rect(panel.right - 175, panel.top + (60 if near_test else 84) + i * 35, 155, 28) for i in range(len(fields))]
+    start_btn = pygame.Rect(panel.left + 20, panel.bottom - 48, 180, 30)
+    cancel_btn = pygame.Rect(panel.right - 150, panel.bottom - 48, 130, 30)
+    background = screen.copy()
+    clock = pygame.time.Clock()
+    while True:
+        screen.blit(background, (0, 0))
+        pygame.draw.rect(screen, (30, 35, 42), panel, border_radius=8)
+        title = f"{near_test} CONVERGENCE" if near_test else "SCAN CONVERGENCE"
+        screen.blit(bold.render(title, True, (245, 245, 245)), (panel.left + 18, panel.top + 16))
+        if not near_test:
+            screen.blit(font.render("Warning: scan may take 12 hours or longer.", True, (255, 195, 100)),
+                        (panel.left + 18, panel.top + 42))
+        for i, ((key, label), rect) in enumerate(zip(fields, rects)):
+            screen.blit(font.render(label, True, (235, 235, 235)), (panel.left + 20, rect.y + 5))
+            draw_input_box(screen, rect, values[i], font, active == i, "")
+        inherited_top = rects[-1].bottom + 14
+        screen.blit(bold.render("Test conditions", True, (235, 235, 235)), (panel.left + 20, inherited_top))
+        for i, line in enumerate(inherited_lines):
+            screen.blit(font.render(line, True, (200, 210, 220)), (panel.left + 20, inherited_top + 24 + i * 20))
+        if error:
+            for i, line in enumerate(textwrap.wrap(error, max(25, (panel.width - 36) // 9))):
+                screen.blit(font.render(line, True, (255, 150, 130)), (panel.left + 18, panel.bottom - 95 + i * 17))
+        draw_button(screen, start_btn, "START TEST" if near_test else "START SCAN", bold, (70, 100, 65), (255, 255, 255))
+        draw_button(screen, cancel_btn, "CANCEL", bold, (95, 65, 65), (255, 255, 255))
+        pygame.display.flip()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            start = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if cancel_btn.collidepoint(event.pos):
+                    return None
+                start = start_btn.collidepoint(event.pos)
+                for i, rect in enumerate(rects):
+                    if rect.collidepoint(event.pos):
+                        active, replace = i, True
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None
+                if event.key == pygame.K_TAB:
+                    active = (active + (-1 if event.mod & pygame.KMOD_SHIFT else 1)) % len(fields)
+                    replace = True
+                elif event.key == pygame.K_RETURN:
+                    start = True
+                elif event.key == pygame.K_BACKSPACE:
+                    values[active] = "" if replace else values[active][:-1]
+                    replace = False
+            if event.type == pygame.TEXTINPUT:
+                if all(char in "0123456789.-+eE" for char in event.text):
+                    values[active] = event.text if replace else values[active] + event.text
+                    replace = False
+            if start:
+                try:
+                    result = dict(config)
+                    result.update({key: float(value) for (key, _), value in zip(fields, values)})
+                    if near_test:
+                        if any(not math.isfinite(value) or value < 0 for value in result.values()):
+                            raise ValueError("Near limits must be finite and non-negative")
+                    else:
+                        robustness_axes(result)
+                        result["runs"], result["seed"] = int(result["runs"]), int(result["seed"])
+                    return result
+                except (ValueError, OverflowError) as exc:
+                    error = str(exc)
+        clock.tick(30)
+
+
+def robustness_demo_adapter(demo_paths, selected_demo_idx, ball):
+    """UI-owned playback adapter; path randomness is independent of sensor draws."""
+    def initialize(actual):
+        state = {"paths": deepcopy(demo_paths), "selected_idx": selected_demo_idx,
+                 "look_target_x_cm": ball["x_cm"], "look_target_y_cm": ball["y_cm"]}
+        saved_random_state = random.getstate()
+        try:
+            reset_demo_playback_state(actual, state)
+            return {"robots": {"actual": actual}, "demo_state": state,
+                    "path_random_state": random.getstate(), "settings": {"dt": DT}}
+        finally:
+            random.setstate(saved_random_state)
+
+    def step(actual, path):
+        step_paper_lm_demo(path)
+
+    return initialize, step
+
+
 # --- Main UI entrypoint ---
 def main():
     global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
@@ -3915,7 +4620,7 @@ def main():
     win_w = min(1380, int(screen_w * 0.95))
     win_h = min(880, int(screen_h * 0.90))
 
-    panel_w = min(PANEL_W_PX, max(340, win_w // 4))
+    panel_w = min(PANEL_W_PX, max(390, win_w // 4))
     world_w = win_w - panel_w
     world_h = win_h
 
@@ -3969,6 +4674,7 @@ def main():
     converge_test_status = None
     paper_lm_setup = None
     paper_lm_result = None
+    robustness_config = robustness_sweep_defaults()
     default_demo_path_idx = next(
         (idx for idx, path in enumerate(DEMO_PATHS) if path["name"] == "Circle"),
         0,
@@ -4123,7 +4829,7 @@ def main():
     legend_padding = 8
     legend_line_h = 18
     legend_w = 150
-    legend_h = legend_padding * 2 + legend_line_h * 2
+    legend_h = legend_padding * 2 + legend_line_h * 3
 
     panel_left = world_w + 16
     panel_inner_w = panel_w - 32
@@ -4177,10 +4883,11 @@ def main():
     viewing_toggle_w = 114
     viewing_gap = 8
     viewing_toggle_btn = pygame.Rect(panel_left, row_y, viewing_toggle_w, btn_h)
-    viewing_angle_input_rect = pygame.Rect(panel_left + viewing_toggle_w + viewing_gap, row_y, panel_inner_w - viewing_toggle_w - viewing_gap, btn_h)
-    row_y += btn_h + row_gap
     compact_btn_gap = 6
     compact_btn_w = (panel_inner_w - 3 * compact_btn_gap) // 4
+    viewing_angle_input_rect = pygame.Rect(panel_left + viewing_toggle_w + viewing_gap, row_y, viewing_toggle_w, btn_h)
+    robustness_btn = pygame.Rect(viewing_angle_input_rect.right + viewing_gap, row_y, viewing_toggle_w, btn_h)
+    row_y += btn_h + row_gap
     slip_btn = pygame.Rect(panel_left, row_y, compact_btn_w, btn_h)
     dropout_btn = pygame.Rect(slip_btn.right + compact_btn_gap, row_y, compact_btn_w, btn_h)
     obstruction_btn = pygame.Rect(dropout_btn.right + compact_btn_gap, row_y, compact_btn_w, btn_h)
@@ -4365,7 +5072,7 @@ def main():
         (
             "converge_near",
             convnear_btn,
-            "Landmark-only static convergence: actual inside field; belief dx,dy uniform +/-50 cm; dtheta uniform +/-20 deg",
+            lambda: f"Landmark-only static convergence: actual inside field; {near_start_condition_text()}",
         ),
         (
             "converge_corner",
@@ -4380,7 +5087,12 @@ def main():
         (
             "converge_dynamic_near",
             convdynamic_near_btn,
-            "Run convergence cases while the actual robot follows the demo path from nearby belief starts",
+            lambda: f"Run convergence cases while the actual robot follows the demo path; {near_start_condition_text()}",
+        ),
+        (
+            "robustness",
+            robustness_btn,
+            "Sweep exact FCS dx/dy/angle offsets; N random-start trials per point; only 100% correct passes. ESC stops and saves partial results",
         ),
     ]
 
@@ -4532,6 +5244,7 @@ def main():
         pygame.draw.rect(screen, (235, 235, 235), legend_rect, width=1, border_radius=8)
         screen.blit(font_b.render("Green = actual", True, (0, 255, 0)), (legend_rect.x + legend_padding, legend_rect.y + legend_padding))
         screen.blit(font_b.render("Red = belief", True, (255, 80, 80)), (legend_rect.x + legend_padding, legend_rect.y + legend_padding + legend_line_h))
+        screen.blit(font_b.render("Q/E to rotate", True, (235, 235, 235)), (legend_rect.x + legend_padding, legend_rect.y + legend_padding + legend_line_h * 2))
 
         for landmark_id, (lx, ly) in active_simulation_landmarks().items():
             px, py = fcs_to_screen(lx, ly, world_w, world_h, scale)
@@ -4733,11 +5446,11 @@ def main():
         draw_button(screen, convdynamic_near_btn, "D-NEAR", font_b, (90, 60, 120), (255, 255, 255))
         draw_button(screen, paper_data_btn, "P-2hrs", font_b, (105, 45, 150), (255, 255, 255))
         draw_button(screen, paper_lm_btn, "P-LM", font_b, (105, 45, 150), (255, 255, 255))
+        draw_button(screen, robustness_btn, "C-scan", font_b, (90, 60, 120), (255, 255, 255))
 
         lines = []
-        lines.append("Rotate robot: hold Q / E")
         if converge_test_status is not None:
-            lines.append(converge_test_status)
+            lines.extend(converge_test_status.splitlines())
         actual_pose = robot_pose_view(robots["actual"])
         belief_pose = robot_pose_view(robots["belief"])
         actual_fcs_gc = robots["actual"]
@@ -5046,6 +5759,54 @@ def main():
                             open_pdf=False,
                         )
                         continue
+                    if robustness_btn.collidepoint(mx, my):
+                        setup = dict(robustness_config, runs=CONVERGE_TEST_RUNS)
+                        algorithm = algorithm_names[selected_algorithm_idx]
+                        settings = experiment_settings(algorithm)
+                        settings.update(algorithm_name=algorithm,
+                                        profile_name=MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                                        demo_path=deepcopy(demo_state["paths"][demo_state["selected_idx"]]),
+                                        ball_fcs=dict(ball))
+                        setup = convergence_setup_dialog(screen, setup, settings)
+                        if setup is False:
+                            running = False
+                            continue
+                        if setup is None:
+                            continue
+                        robustness_config = setup
+                        initialize_path, step_path = robustness_demo_adapter(
+                            demo_state["paths"], demo_state["selected_idx"], dict(ball),
+                        )
+
+                        def robustness_progress(point_id, offset, trial, runs, step, maximum, phase):
+                            nonlocal converge_test_status, running
+                            converge_test_status = f"ROB-{phase[0].upper()} {point_id}: {trial}/{runs} | {step}/{maximum} | ESC"
+                            converge_test_status += f"\ndx {offset[0]:g} dy {offset[1]:g} cm | da {offset[2]:g} deg"
+                            safe_draw()
+                            for pending_event in pygame.event.get():
+                                if pending_event.type == pygame.QUIT:
+                                    running = False
+                                    return False
+                                if pending_event.type == pygame.KEYDOWN and pending_event.key == pygame.K_ESCAPE:
+                                    return False
+                                if pending_event.type == pygame.MOUSEBUTTONDOWN and quit_btn.collidepoint(pending_event.pos):
+                                    running = False
+                                    return False
+                            return True
+
+                        demo_state["playing"] = False
+                        saved_analysis_on = analysis_on
+                        analysis_on = False
+                        try:
+                            result = export_robustness_dataset(setup, algorithm, initialize_path, step_path,
+                                                               settings, robustness_progress)
+                        finally:
+                            analysis_on = saved_analysis_on
+                        outcome = "stopped" if result["stopped"] else "finished"
+                        converge_test_status = f"ROB {outcome}: {result['tested_points']} tested\n{result['skipped_points']} skipped; reports/"
+                        print(f"Robustness metadata: {result['metadata_path']}")
+                        plot_robustness_report(result["metadata_path"], open_pdf=running, show_plot=running)
+                        continue
                     if paper_lm_btn.collidepoint(mx, my):
                         paper_lm_setup = capture_paper_lm_setup(
                             robots,
@@ -5090,7 +5851,6 @@ def main():
                         actual_start = robot_pose_view(robots["actual"])
                         belief_start = random_nearby_belief_pose(
                             {"x": actual_start["x_cm"], "y": actual_start["y_cm"], "theta": actual_start["theta_rad"]},
-                            max_offset_cm=50.0,
                         )
                         robots["belief"] = make_robot_gc_state(belief_start["x"], belief_start["y"], belief_start["theta"])
                         paper_algorithm_name = algorithm_names[selected_algorithm_idx]
@@ -5138,6 +5898,18 @@ def main():
                         demo_path_name = demo_state["paths"][demo_state["selected_idx"]]["name"]
                         dynamic_start_mode = "nearby" if convdynamic_near_btn.collidepoint(mx, my) else "random"
                         status_label = f"Dynamic {dynamic_start_mode} {demo_path_name}"
+                        near_limits = None
+                        if dynamic_start_mode == "nearby":
+                            settings = experiment_settings(converge_algorithm_name)
+                            settings.update(algorithm_name=converge_algorithm_name,
+                                            profile_name=MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                                            demo_path=demo_state["paths"][demo_state["selected_idx"]], ball_fcs=dict(ball))
+                            near_limits = convergence_setup_dialog(screen, dict(NEAR_START_LIMITS), settings, near_test="D-NEAR")
+                            if near_limits is False:
+                                running = False
+                                continue
+                            if near_limits is None:
+                                continue
 
                         def progress_update(current, total, conv, nonconv):
                             nonlocal converge_test_status
@@ -5167,6 +5939,7 @@ def main():
                             look_target_x_cm=ball["x_cm"],
                             look_target_y_cm=ball["y_cm"],
                             profile_name=MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                            near_start_limits=near_limits,
                         )
                         converge_test_status = None
                         last_history = converge_test_report["last_history"]
@@ -5185,6 +5958,18 @@ def main():
                         else:
                             start_mode = "random"
                             status_label = "Landmark converge test"
+                        near_limits = None
+                        if start_mode == "nearby":
+                            settings = experiment_settings(converge_algorithm_name)
+                            settings.update(algorithm_name=converge_algorithm_name,
+                                            profile_name=MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
+                                            demo_path=demo_state["paths"][demo_state["selected_idx"]], ball_fcs=dict(ball))
+                            near_limits = convergence_setup_dialog(screen, dict(NEAR_START_LIMITS), settings, near_test="S-NEAR")
+                            if near_limits is False:
+                                running = False
+                                continue
+                            if near_limits is None:
+                                continue
 
                         def progress_update(current, total, conv, nonconv):
                             nonlocal converge_test_status
@@ -5209,6 +5994,7 @@ def main():
                             progress_callback=progress_update,
                             start_mode=start_mode,
                             start_cases=start_cases,
+                            near_start_limits=near_limits,
                         )
                         converge_test_status = None
                         last_history = converge_test_report['last_history']
