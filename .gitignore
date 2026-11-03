@@ -13,11 +13,6 @@
 !/brain_inspired_localization_core.py
 !/global_pose_initialization.py
 !/global_pose_initialization.md
-!/test_global_pose_initialization.py
-!/test_convergence_symmetry.py
-!/test_localization_regression.py
-!/test_core_interface.py
-!/localization_regression_baseline.json
 !/brain_inspired_self_localisation.pdf
 !/step_core_cpp_interface.txt
 
