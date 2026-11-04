@@ -90,7 +90,6 @@ The request is a pybind11/JSON-friendly dictionary:
 
         "landmark_observations_rcs": [
             {
-                "obs_id": "cam_0",
                 "name": "corner",
                 "x_rcs_cm": 120.0,
                 "y_rcs_cm": -40.0
@@ -174,14 +173,14 @@ timestamp:
     used for diagnostics/logging and is not used in the calculation.
 
     Format:
-        ISO 8601 / RFC 3339 UTC timestamp string with millisecond precision.
+        A string is required. No specific format, timezone, or precision is
+        required; Python does not parse the string.
 
     Example:
         2026-05-01T13:45:12.345Z
 
     Notes:
-        - The suffix must be Z or +00:00 (UTC).
-        - Milliseconds are the three digits after the decimal point.
+        - Missing or non-string timestamps are rejected.
         - Python treats this value as metadata and echoes it in diagnostics.
         - The algorithm uses the field step_dt_s in the update step.
 
@@ -211,7 +210,7 @@ Initial integration model:
 
     and pass both values:
 
-        timestamp = current_timestamp as ISO 8601 / RFC 3339 UTC string
+        timestamp = current_timestamp as a string (no specific format required)
         step_dt_s = computed delta
 
     Python treats timestamp as metadata for logging/correlation and uses
@@ -259,7 +258,6 @@ Landmark observation schema
 Each landmark observation should contain:
 
     {
-        "obs_id": "cam_0",
         "name": "corner",
         "x_rcs_cm": 120.0,
         "y_rcs_cm": -40.0
@@ -270,11 +268,10 @@ Required:
     x_rcs_cm
     y_rcs_cm
 
-Optional:
-    obs_id
-
-    If obs_id is omitted, Python assigns:
-        obs_0, obs_1, ...
+Robot callers must omit obs_id entirely; do not send an empty string or null.
+    Python automatically assigns obs_0, obs_1, ... within each request for
+    internal observation bookkeeping and diagnostics. These IDs do not identify
+    map landmarks and do not need to persist between frames.
 
 Default map recognition names:
     center
@@ -388,7 +385,7 @@ Conceptual example:
     request["motion_observation"] = motion;
     request["algorithm_name"] = "motion+landmark";
     request["step_dt_s"] = 0.005;
-    request["timestamp"] = timestamp_iso8601_utc;
+    request["timestamp"] = timestamp;  // Required string; no specific format required
 
     py::dict response = step_core(request).cast<py::dict>();
     py::dict next_belief = response["belief_fcs_gc"].cast<py::dict>();

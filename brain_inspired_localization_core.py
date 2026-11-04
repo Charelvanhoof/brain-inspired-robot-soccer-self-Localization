@@ -1,8 +1,6 @@
 # Code for the Robot_Soccer_Self_Localization_with_Active_Inference
 # Based on version POC V29
 import math
-import datetime
-import re
 from copy import deepcopy
 from collections import Counter
 
@@ -157,7 +155,11 @@ LANDMARK_SCENARIO_PROFILES = [{'name': '9 ambiguous',
                 {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -120.0},
                 {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 120.0},
                 {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -120.0},
-                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 120.0}]}]
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 120.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': 675.0, 'y_cm': -600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': 675.0, 'y_cm': 600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': -675.0, 'y_cm': -600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': -675.0, 'y_cm': 600.0}]}]
 
 
 def landmark_profile_association_name(profile):
@@ -853,7 +855,7 @@ def step_core(request):
     #     motion_observation: observed motion terms in RCS
     #     algorithm_name: optional inference mode
     #     step_dt_s: required inference timestep, preferably computed by C++ from frame timestamps
-    #     timestamp: required UTC timestamp with milliseconds, for traceability/logging
+    #     timestamp: required string for traceability/logging; no specific format required
     # Output:
     #   dict containing the next belief_fcs_gc and diagnostics
     # Function:
@@ -940,9 +942,8 @@ def step_core(request):
     if "step_dt_s" not in request:
         raise ValueError("step_core request requires 'step_dt_s'")
     timestamp = request.get("timestamp")
-    if not isinstance(timestamp, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|\+00:00)", timestamp):
-        raise ValueError("timestamp must be a UTC ISO 8601 string with millisecond precision")
-    datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if not isinstance(timestamp, str):
+        raise ValueError("timestamp must be a string")
 
     belief_fcs_gc = shield_belief_fcs_gc(request["belief_fcs_gc"])
     landmark_observations_rcs = shield_landmark_observations_rcs(request.get("landmark_observations_rcs", []))
