@@ -81,3 +81,5 @@ explicit reload, invalid-input atomicity, initialization requirements for every
 inference mode, zero-rate behavior, and the correction controlled by each rate.
 The simulator adapter is checked for reinitialization only when rates change.
 Core has no hardcoded rate defaults or `CORE_SETTING_DEFAULTS` snapshot.
+The learning-rate request also requires a string `profile` name. Tests verify
+that changing this reference label changes diagnostics only, not inference.

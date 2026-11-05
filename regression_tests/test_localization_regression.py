@@ -80,7 +80,7 @@ def configured(module, scenario):
         names = CORE_STATE_NAMES
         stack.enter_context(patch.multiple(core, **deepcopy({name: getattr(core, name) for name in names})))
         landmarks = profile["landmarks"]
-        core.init_learning_rates({name: SETTINGS[setting] for name, setting in LEARNING_RATE_SETTINGS.items()})
+        core.init_learning_rates({"profile": "frozen regression", **{name: SETTINGS[setting] for name, setting in LEARNING_RATE_SETTINGS.items()}})
         settings = {name: value for name, value in SETTINGS.items()
                     if name != "DT" and name not in LEARNING_RATE_SETTINGS.values()}
         core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
@@ -564,7 +564,7 @@ class RecognitionNameTests(unittest.TestCase):
         with configured(sim, dict(association="Gated nearest", profile="9")):
             profile = sim.landmark_scenario_profile_by_name("2 ambiguous")
             core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
-            core.init_learning_rates({name: 0 for name in LEARNING_RATE_SETTINGS})
+            core.init_learning_rates({"profile": "zero rates", **{name: 0 for name in LEARNING_RATE_SETTINGS}})
             robots = {"actual": sim.make_robot_gc_state(200, -100, 0.25),
                       "belief": sim.make_robot_gc_state(220, -115, 0.3)}
             with patch.object(core, "init_landmarks", wraps=core.init_landmarks) as select, \

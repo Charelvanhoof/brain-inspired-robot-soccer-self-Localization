@@ -30,6 +30,7 @@ class CoreInterfaceTests(unittest.TestCase):
         ]
 
         self.learning_rates = {
+            "profile": "test rates",
             "landmark_xy": 1.6, "landmark_theta": 2.20325e-05 * 0.8,
             "motion_velocity_xy": 4.0, "motion_velocity_theta": 4.0,
             "motion_acceleration_xy": 40.0, "motion_acceleration_theta": 40.0,
@@ -135,13 +136,25 @@ class CoreInterfaceTests(unittest.TestCase):
             missing = self.learning_rates.copy()
             del missing[name]
             invalid.append(missing)
-            for value in (-1, math.nan, math.inf, None, True, "1.6"):
+            values = (None, 42, False, []) if name == "profile" else (-1, math.nan, math.inf, None, True, "1.6")
+            for value in values:
                 invalid.append({**self.learning_rates, name: value})
         for supplied in invalid:
             with self.subTest(supplied=supplied), self.assertRaises(ValueError):
                 core.init_learning_rates(supplied)
             self.assertEqual(core.LEARNING_RATES, self.learning_rates)
             self.assertEqual(core.step_core(self.request()), reference)
+
+    def test_learning_rate_profile_is_only_a_reference_label(self):
+        supplied = self.learning_rates.copy()
+        request = self.request()
+        reference = core.step_core(request)
+        supplied["profile"] = "renamed tuning"
+        self.assertEqual(core.step_core(request), reference)
+        result = core.init_learning_rates(supplied)
+        self.assertEqual(result["profile"], "renamed tuning")
+        reference["diagnostics"]["settings"]["learning_rates"]["profile"] = "renamed tuning"
+        self.assertEqual(core.step_core(request), reference)
 
     def test_all_inference_modes_require_learning_rate_initialization(self):
         request = self.request()
@@ -162,7 +175,7 @@ class CoreInterfaceTests(unittest.TestCase):
                 core.landmark_inference_step(request["belief_fcs_gc"], {})
 
     def test_zero_learning_rates_disable_corrections_but_keep_generalized_motion(self):
-        core.init_learning_rates(dict.fromkeys(self.learning_rates, 0))
+        core.init_learning_rates({name: "zero rates" if name == "profile" else 0 for name in self.learning_rates})
         request = self.request()
         request["algorithm_name"] = "landmark only"
         request["belief_fcs_gc"]["theta"][0] = 0
@@ -191,7 +204,7 @@ class CoreInterfaceTests(unittest.TestCase):
             request["algorithm_name"] = "landmark only" if name.startswith("landmark") else "motion only"
             for axis in ("x", "y", "theta"):
                 request["belief_fcs_gc"][axis][1:] = [2, 3]
-            rates = dict.fromkeys(self.learning_rates, 0.0)
+            rates = {name: "isolated rate" if name == "profile" else 0.0 for name in self.learning_rates}
             core.init_learning_rates(rates)
             baseline = core.step_core(request)["belief_fcs_gc"]
             rates[name] = 0.5
@@ -313,8 +326,8 @@ class CoreInterfaceTests(unittest.TestCase):
         for case in data["scenarios"]:
             with self.subTest(case=case["name"]):
                 mapped = regression.profile_for_case(case)["landmarks"]
-                core.init_learning_rates({name: regression.SETTINGS[setting]
-                                          for name, setting in regression.LEARNING_RATE_SETTINGS.items()})
+                core.init_learning_rates({"profile": "frozen regression", **{name: regression.SETTINGS[setting]
+                                          for name, setting in regression.LEARNING_RATE_SETTINGS.items()}})
                 settings = {key: value for key, value in regression.SETTINGS.items()
                             if key != "DT" and key not in regression.LEARNING_RATE_SETTINGS.values()}
                 profile = regression.profile_for_case(case)

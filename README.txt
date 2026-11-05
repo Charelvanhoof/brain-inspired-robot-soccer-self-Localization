@@ -222,6 +222,7 @@ core.init_landmarks({
     ],
 })
 core.init_learning_rates({
+    "profile": "profile name",
     "landmark_xy": 1.6, "landmark_theta": 1.700e-07,
     "motion_velocity_xy": 4.0, "motion_velocity_theta": 4.0,
     "motion_acceleration_xy": 40.0, "motion_acceleration_theta": 40.0,
@@ -236,10 +237,11 @@ Invalid initialization leaves the previous map intact. Landmark/fused inference
 requires initialization; motion-only inference does not. An explicit empty map
 is allowed. One active map is stored per imported core module.
 
-All six learning rates must be initialized before inference; core has no default
+A string `profile` name and all six learning rates must be initialized before inference; core has no default
 rates. The values above are examples. Rates must be finite non-negative numbers;
 zero disables a correction term while motion propagation remains active. Core
 copies the supplied values; changes require another `init_learning_rates` call.
+The learning-rate profile name is for reference only and does not affect inference.
 Invalid input preserves the active rates. Map and belief remain unchanged.
 
 The GUI initializes the selected map and learning rates at startup, and applies

@@ -72,10 +72,11 @@ inference does not require a map. An explicitly empty landmarks list is allowed.
 
 Learning-rate initialization: init_learning_rates(learning_rates)
 ----------------------------------------------------------------
-Call before inference. All six rates are required; core has no default rates.
+Call before inference. Supply a profile name and all six rates; core has no default rates.
 Example values (choose rates for your robot and update frequency):
 
     core.init_learning_rates({
+        "profile": "profile name",
         "landmark_xy": 1.6,
         "landmark_theta": 1.700e-07,
         "motion_velocity_xy": 4.0,
@@ -84,10 +85,13 @@ Example values (choose rates for your robot and update frequency):
         "motion_acceleration_theta": 40.0
     })
 
-Values must be finite, non-negative numbers. Zero is allowed and disables that correction term. Rates are not automatically
+profile: name for managing your learning-rate profiles; not used by the algorithm.
+         Returned with the applied rates and in diagnostics.settings.learning_rates.
+
+Rate values must be finite, non-negative numbers. Zero is allowed and disables that correction term. Rates are not automatically
 scaled when e.g. step_dt_s changes.
 
-Core copies the six values and returns the applied rates. Changes require another
+Core copies the profile name and six values, and returns the applied configuration. Changes require another
 explicit call. Invalid input leaves the previous rates unchanged. Without initialization, all inference
 modes raise ValueError. 
 
@@ -368,7 +372,7 @@ Conceptual example:
     landmark_profile["profile"] = "profile name";
     landmark_profile["landmarks"] = field_landmark_records;
     loc.attr("init_landmarks")(landmark_profile);
-    // Six named rates loaded from the robot configuration, as shown above.
+    // Profile name and six rates loaded from the robot configuration, as shown above.
     loc.attr("init_learning_rates")(learning_rate_values);
     py::object step_core = loc.attr("step_core");
 

@@ -534,6 +534,7 @@ def ensure_simulation_core_configuration():
     if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
         core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
     learning_rates = {
+        "profile": "simulator",
         "landmark_xy": LR_XY, "landmark_theta": LR_ANGLE,
         "motion_velocity_xy": MOTION_LR_VEL_XY, "motion_velocity_theta": MOTION_LR_VEL_THETA,
         "motion_acceleration_xy": MOTION_LR_ACC_XY, "motion_acceleration_theta": MOTION_LR_ACC_THETA,

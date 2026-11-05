@@ -39,9 +39,9 @@ LEARNING_RATES = None
 
 def init_learning_rates(learning_rates):
     # Input:
-    #   learning_rates: all six named, finite, non-negative correction rates.
+    #   learning_rates: string profile name plus six finite, non-negative correction rates.
     # Output:
-    #   independent dictionary of the applied rates.
+    #   independent dictionary of the profile name and applied rates.
     # Function:
     #   validate the complete request before replacing the active rates;
     #   leave landmarks, belief, and other core settings unchanged.
@@ -50,9 +50,12 @@ def init_learning_rates(learning_rates):
              "motion_velocity_theta", "motion_acceleration_xy", "motion_acceleration_theta")
 
     # Validate and copy all rates. Zero disables the corresponding correction.
-    if not isinstance(learning_rates, dict) or set(learning_rates) != set(names):
-        raise ValueError("learning_rates must contain exactly: " + ", ".join(names))
-    applied = {}
+    if not isinstance(learning_rates, dict) or set(learning_rates) != {"profile", *names}:
+        raise ValueError("learning_rates must contain exactly: profile, " + ", ".join(names))
+    if not isinstance(learning_rates["profile"], str):
+        raise ValueError("learning_rates profile must be a string")
+    # The profile label is for reference only; it does not select or scale rates.
+    applied = {"profile": learning_rates["profile"]}
     for name in names:
         value = learning_rates[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
