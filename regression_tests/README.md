@@ -1,14 +1,14 @@
-Automated checks and their frozen reference data live in `tests/`. From the project root, run `python -m unittest discover -v`.
+Automated checks and their frozen reference data live in `regression_tests/`. From the project root, run `python -m unittest discover -s regression_tests -v`.
 
 ## Frozen regression baseline before the landmark refactor
 
 Run the new numerical regression set and the existing convergence tests with:
 
 ```powershell
-python -m unittest tests.test_localization_regression tests.test_convergence_symmetry -v
+python -m unittest regression_tests.test_localization_regression regression_tests.test_convergence_symmetry -v
 ```
 
-`tests/localization_regression_baseline.json` records 16 deterministic scenarios from
+`regression_tests/localization_regression_baseline.json` records 16 deterministic scenarios from
 `resolve-symmetry` commit `5402ded`, including the source hashes and explicit
 40 Hz settings. It contains actual/belief generalized coordinates and saved
 sensor observations, not just seeds. Stationary input frames use a repeat count;
@@ -51,7 +51,7 @@ Ordinary test runs only read the baseline. To intentionally establish a new
 reference after reviewing a behavior change, run:
 
 ```powershell
-python -m tests.test_localization_regression --capture-baseline
+python -m regression_tests.test_localization_regression --capture-baseline
 ```
 
 Do not regenerate it merely to make a failing regression pass. During the

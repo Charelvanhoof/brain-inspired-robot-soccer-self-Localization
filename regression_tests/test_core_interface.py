@@ -139,7 +139,7 @@ class CoreInterfaceTests(unittest.TestCase):
         self.assertEqual(response["diagnostics"]["landmark_terms"], [])
 
     def test_selected_core_profile_replays_frozen_numeric_reference(self):
-        from tests import test_localization_regression as regression
+        from regression_tests import test_localization_regression as regression
         data = json.loads(regression.BASELINE.read_text(encoding="utf-8"))
         compare = regression.LocalizationRegressionTests().assert_close
         references = {"gated_near_poster": "gated_symmetric_9", "gated_far_poster": "gated_near_9"}

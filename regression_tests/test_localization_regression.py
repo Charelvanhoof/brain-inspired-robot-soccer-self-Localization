@@ -1,6 +1,6 @@
-"""Frozen pre-refactor regression cases; run python -m unittest tests.test_localization_regression -v.
+"""Frozen pre-refactor regression cases; run python -m unittest regression_tests.test_localization_regression -v.
 
-Capture explicitly with python -m tests.test_localization_regression --capture-baseline.
+Capture explicitly with python -m regression_tests.test_localization_regression --capture-baseline.
 Never recapture merely to make a failed regression pass.
 """
 from contextlib import ExitStack

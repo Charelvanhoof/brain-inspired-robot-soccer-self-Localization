@@ -16,6 +16,10 @@
 !/brain_inspired_self_localisation.pdf
 !/step_core_cpp_interface.txt
 
+# Regression tests and frozen reference data.
+!/regression_tests/
+/regression_tests/__pycache__/
+
 # Latest paper PDF; the Paper directory stays local.
 !/Robot_Soccer_Self_Localization_with_Active_Inference.pdf
 

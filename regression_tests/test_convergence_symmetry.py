@@ -1,4 +1,4 @@
-"""Run with: python -m unittest tests.test_convergence_symmetry -v."""
+"""Run with: python -m unittest regression_tests.test_convergence_symmetry -v."""
 import importlib.util
 import math
 from pathlib import Path
