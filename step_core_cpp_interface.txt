@@ -25,55 +25,50 @@ For real robot integration, import:
 
 brain_inspired_localization_core.py is the single algorithm implementation.
 It imports only the standard library, with no pygame, matplotlib, simulator or
-map-file reads. Complete landmark profiles are Python data in core; the first
-profile is selected by default. No landmark initialization function is needed.
+map-file reads. Core has no built-in field map or profile catalog. The caller
+supplies its selected field map through init_landmarks(profile) before stepping.
 
 
-Masterdata configuration before the first run
---------------------------------------------
-Before running the standalone core for the first time, check its masterdata
-against the actual soccer field, robot sensors, and update frequency. Its
-settings are separate from those in the interactive POC file.
+Landmark initialization: init_landmarks(profile)
+-----------------------------------------------
+Call once before landmark or fused inference. Supply the soccer field landmarks
+in FCS, in centimeters, as a flat list with one record per landmark.
 
-Check:
-    - Soccer field length and width, and mapped landmark positions in FCS.
-      All distances must be in centimeters.
-    - Which recognition names the robot can detect, and whether those names match
-      the landmark map and metadata. A name is unique only when it identifies
-      one field landmark.
-    - Landmark recognition names and distance gate. Real robot observations
-      provide recognition names, not a separate exact map landmark ID.
-    - Camera, odometry, and IMU precision settings, and position, heading,
-      velocity, and acceleration learning rates for the update frequency.
-    - Whether the distance precision modifier is enabled, and its reference
-      distance and minimum factor.
+FCS coordinates:
+    (0, 0): center of the field.
+    +X: toward the enemy goal.
+    +Y: left when facing the enemy goal.
 
-Select a built-in profile before processing frames, for example:
+Example (positions depend on your field):
 
-    core.set_landmark_profile("9 unique")
+    core.init_landmarks({
+        "profile": "profile name",
+        "landmarks": [
+            {"name": "corner", "type": "pose", "x_cm": 900, "y_cm": 600},
+            {"name": "corner", "type": "pose", "x_cm": 900, "y_cm": -600},
+            {"name": "center_circle", "type": "pose", "x_cm": 0, "y_cm": 0}
+        ]
+    })
 
-The GUI sets the selected profile in core. step_core does not receive a profile
-name or landmark configuration. Selecting a profile updates the map, leaving the existing core gains/precisions
-unchanged. Unique names match directly; repeated names use gated nearest.
-The GUI synchronizes those existing uppercase settings separately.
-Belief and timing remain caller-owned and are supplied with every frame.
+Fields:
+    profile: name for managing your profiles; not used by the algorithm.
+             Echoed in diagnostics. Core does not look up a map by this name.
+    landmarks: complete list of mapped landmarks for this field.
+        name: landmark name observed by the robot and supplied in step_core.
+              Repeated names are allowed, e.g. corner. A name occurring only
+              once is unique, e.g. center_circle. Use exactly the same spelling
+              in the map and observations.
+        type: use pose for localization landmarks on the field.
+              Use orientation for landmarks outside the field landmark set,
+              e.g. a poster providing an orientation cue to break field symmetry.
+              Orientation landmarks are not used in normal tracking. Their use
+              in initial pose estimation is future work.
+        x_cm, y_cm: landmark position in FCS centimeters.
 
-LANDMARK_SCENARIO_PROFILES contains self-contained records with name and a
-complete landmarks list. Each landmark has name, type (pose/orientation),
-x_cm and y_cm. Positions are absolute FCS centimeters. Name counts in the full
-selected map determine uniqueness. Normal tracking ignores orientation landmarks;
-they contribute neither updates nor free energy.
-
-Map-point diagnostic keys are strings of zero-based row indices in the selected
-profile, not sensor identities. The simulator uses this same map to generate
-sensor observations; FOV limits observations independently. Individual recognition
-names exist only when explicitly defined in the selected profile.
-
-Simulation LM PROFILE selections do not configure real robot perception.
-Supply only landmarks actually detected in the current observation frame.
-Passing step_dt_s does not automatically select a masterdata or learning-rate
-preset. No additional step_core request fields are needed for this setup.
-
+Core stores its own copy. To apply a change, call init_landmarks(profile) again.
+Invalid input leaves the previous map unchanged. Returns profile and landmark_count.
+Landmark/fused inference without initialization raises ValueError. Motion-only
+inference does not require a map. An explicitly empty landmarks list is allowed.
 
 Request schema
 --------------
@@ -273,14 +268,6 @@ Robot callers must omit obs_id entirely; do not send an empty string or null.
     internal observation bookkeeping and diagnostics. These IDs do not identify
     map landmarks and do not need to persist between frames.
 
-Default map recognition names:
-    center
-    middle
-    corner
-    goal
-    poster1
-    poster2
-
 Important:
     Do not send landmark_id from the real robot path. The real robot perception
     system supplies the recognition name known to its configured map.
@@ -289,38 +276,11 @@ Important:
     from x_rcs_cm and y_rcs_cm before running the core landmark update.
 
 Association:
-    The POC currently supports these landmark association modes internally:
-        Gated nearest
-        Unique ID
-        Unique direct
-
-    Association candidates are selected only by observation name. One matching
-    map point uses direct association; several matching points use nearest
-    association with the existing distance gate. Unknown names are rejected.
-    A profile containing only unique names is a perfect-recognition test scenario:
-    simulator map points get individual recognition names (corner_TR, etc.)
-    and sensor observations supply these names through the same public API.
-    It does not read landmark_id or bypass the name lookup. The real robot can
-    use individual names only when its perception actually distinguishes them.
-    Simulator ground truth is retained separately for reports, not supplied to
-    inference. Select the built-in recognition profile in core; no map files are read.
-
-
-Landmark maps and profiles
---------------------------
-LANDMARK_SCENARIO_PROFILES in core is one list of complete profiles, for example:
-
-    {"name": "2 ambiguous", "landmarks": [
-        {"name": "goal", "type": "pose", "x_cm": 900, "y_cm": 0},
-        {"name": "goal", "type": "pose", "x_cm": -900, "y_cm": 0}
-    ]}
-
-A 9 unique profile explicitly lists nine individually named landmarks. A
-9 ambiguous profile explicitly lists repeated names where recognition is
-ambiguous. Each profile includes all coordinates/types, with no references to
-another table. The GUI selects the desired profile with set_landmark_profile. Each step_core
-request supplies observed names in RCS, without a profile field. Orientation landmarks, when included
-in a profile, remain ignored during normal tracking; gPI is not implemented.
+    The observation name selects candidates from the initialized map.
+    One matching landmark: direct association.
+    Several matching landmarks: nearest association with the configured gate.
+    Unknown name: observation rejected.
+    Uniqueness depends on the complete map, not the currently visible landmarks.
 
 
 Response schema
@@ -334,6 +294,7 @@ step_core returns:
             "theta": [...]
         },
         "diagnostics": {
+            "profile": ...,
             "timestamp": ...,
             "step_dt_s": ...,
             "free_energy": ...,
@@ -366,7 +327,8 @@ and use it as the next request's belief_fcs_gc.
 C++ / pybind11 integration sketch
 ---------------------------------
 Initialize Python once at program startup, import the module once, and cache
-the step_core function. Select the desired built-in profile before stepping. Do not initialize Python every control tick.
+the step_core function. Supply the selected map once before stepping. Call
+init_landmarks again when changing maps. Do not initialize Python every control tick.
 
 Conceptual example:
 
@@ -376,7 +338,11 @@ Conceptual example:
     py::scoped_interpreter guard{};
 
     py::module loc = py::module::import("brain_inspired_localization_core");
-    loc.attr("set_landmark_profile")("9 unique");
+    // The robot wrapper loads these records from its field configuration.
+    py::dict landmark_profile;
+    landmark_profile["profile"] = "profile name";
+    landmark_profile["landmarks"] = field_landmark_records;
+    loc.attr("init_landmarks")(landmark_profile);
     py::object step_core = loc.attr("step_core");
 
     py::dict request;

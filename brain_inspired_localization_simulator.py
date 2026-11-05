@@ -219,7 +219,118 @@ LANDMARK_OBSTRUCTION_REMAINING_S = {}
 # MASTERDATA: Landmarks in FCS (cm)
 # =========================
 # Each profile contains its complete map and recognition names.
-LANDMARK_SCENARIO_PROFILES = core.LANDMARK_SCENARIO_PROFILES
+LANDMARK_SCENARIO_PROFILES = [{'name': '9 ambiguous',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '9 ambiguous +1 orientation close',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'poster1', 'type': 'orientation', 'x_cm': 1200.0, 'y_cm': 300.0}]},
+ {'name': '9 ambiguous +1 orientation far',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'poster2', 'type': 'orientation', 'x_cm': 4900.0, 'y_cm': 300.0}]},
+ {'name': '2 ambiguous',
+  'landmarks': [{'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '1 ambiguous',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0}]},
+ {'name': '3 ambiguous',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '5 ambiguous',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '9 unique',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'left_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'right_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner_TR', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner_TL', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner_BR', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner_BL', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '9 unique +1 orientation close',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'left_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'right_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner_TR', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner_TL', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner_BR', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner_BL', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'poster1', 'type': 'orientation', 'x_cm': 1200.0, 'y_cm': 300.0}]},
+ {'name': '9 unique +1 orientation far',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'left_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'right_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner_TR', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner_TL', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner_BR', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner_BL', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'poster2', 'type': 'orientation', 'x_cm': 4900.0, 'y_cm': 300.0}]},
+ {'name': '2 unique',
+  'landmarks': [{'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '1 unique',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0}]},
+ {'name': '3 unique',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': '5 unique',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'left_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'right_middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'goal_opponent', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal_own', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0}]},
+ {'name': 'testRobotsports',
+  'landmarks': [{'name': 'center', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 0.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': 600.0},
+                {'name': 'middle', 'type': 'pose', 'x_cm': 0.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -600.0},
+                {'name': 'corner', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 600.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 0.0},
+                {'name': 'goal', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 0.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': -120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': 900.0, 'y_cm': 120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': -120.0},
+                {'name': 'goalpost', 'type': 'pose', 'x_cm': -900.0, 'y_cm': 120.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': 675.0, 'y_cm': -600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': 675.0, 'y_cm': 600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': -675.0, 'y_cm': -600.0},
+                {'name': 'penaltyintersection', 'type': 'pose', 'x_cm': -675.0, 'y_cm': 600.0}]}]
 ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = LANDMARK_SCENARIO_PROFILES[0]["name"]
 
 
@@ -417,7 +528,7 @@ def motion_slip_label():
 def ensure_simulation_core_configuration():
     profile = active_landmark_scenario_profile()
     if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
-        core.set_landmark_profile(profile["name"])
+        core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
     for name in core.CORE_SETTING_DEFAULTS:
         if name != "ACTIVE_DATA_ASSOCIATION_NAME":
             setattr(core, name, globals()[name])
@@ -4611,6 +4722,7 @@ def main():
     global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
     if getattr(pygame, "_is_stub", False) or getattr(plt, "_is_stub", False):
         raise ModuleNotFoundError("Interactive mode requires both pygame and matplotlib to be installed")
+    ensure_simulation_core_configuration()
     pygame.init()
     pygame.key.start_text_input()
     info = pygame.display.Info()
@@ -5635,6 +5747,7 @@ def main():
                             selected_landmark_scenario_profile_idx + 1
                         ) % len(LANDMARK_SCENARIO_PROFILES)
                         ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = LANDMARK_SCENARIO_PROFILES[selected_landmark_scenario_profile_idx]["name"]
+                        ensure_simulation_core_configuration()
                         reset_landmark_obstruction_state()
                         continue
                     if analysis_btn.collidepoint(mx, my):

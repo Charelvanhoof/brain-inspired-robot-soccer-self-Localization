@@ -24,7 +24,7 @@ rather than asserting that every scenario must succeed.
 The tests replay saved inputs through the simulator adapter and the standalone
 core (public stepping and low-level core unit tests). All cases, including perfect-recognition
 Unique ID cases, also run through `step_core(request)`, checking that requests
-are not mutated. Test adapters select the explicit unique/gated profile and
+are not mutated. Test adapters initialize core with the selected simulator profile records and
 normalize historical input/output field names for comparison. The frozen measurements
 and expected numeric results are not regenerated. Test-only adapters translate
 old observation IDs/profile names and compare predictions only for points in
@@ -59,3 +59,11 @@ planned landmark and file refactors, keep the current expected numeric results
 and adapt only the input/output adapters when field names or interfaces change.
 These are behavior-preservation tests, not an independent proof of the math.
 
+
+## Landmark initialization boundary
+
+Core has no built-in profiles. The simulator owns the catalog and supplies
+`{"profile": "profile name", "landmarks": [...]}` to `init_landmarks`.
+Interface tests check copied input data, explicit reloads, whole-map replacement,
+invalid-input atomicity, standalone import, and initialization requirements.
+Frozen observations, expected numerical results, and learning rates are unchanged.

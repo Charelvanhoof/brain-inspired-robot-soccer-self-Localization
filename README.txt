@@ -15,7 +15,7 @@ high-fidelity robot physics model.
   convergence tests and reports; calls the shared core (POC V29).
 - `brain_inspired_localization_core.py`: standalone localization core module
   exposing `step_core(request)` for integration without the GUI.
-- `brain_inspired_localization_core.py`: contains the editable list of complete landmark profiles.
+- `brain_inspired_localization_simulator.py`: contains the editable list of complete landmark profiles.
 - `step_core_cpp_interface.txt`: C++ / pybind11 request and response notes.
 - `Robot_Soccer_Self_Localization_with_Active_Inference.pdf`: latest paper.
 - `reports/`: generated datasets and reports.
@@ -65,7 +65,7 @@ python ".\brain_inspired_localization_simulator.py"
   - `NO`: apply no distance weighting to landmark precision.
   Switching this option reapplies the selected frequency's preset, including
   its learning rates, replacing any manual adjustments to those settings.
-- Use `LM PROFILE` to select a complete setup from core, e.g.
+- Use `LM PROFILE` to select a complete setup from the simulator, e.g.
   `9 unique`, `9 ambiguous`, `2 ambiguous` or `9 unique +1 orientation far`.
   The list includes 1/2/3/5/9-point setups and 9+1 near/far setups for both modes.
   Near/far orientation cues are at (1200, 300) and (4900, 300) FCS cm.
@@ -167,9 +167,9 @@ mean, standard deviation, p95, p99, maximum, and the number of converged cases.
 Failed cases include compact actual/belief path traces, visible landmark counts,
 and start/end poses for review.
 
-## Landmark profiles: one list in core
+## Landmark profiles: one list in the simulator
 
-`LANDMARK_SCENARIO_PROFILES` in core is a list of self-contained profiles. Each profile holds its
+`LANDMARK_SCENARIO_PROFILES` in the simulator is a list of self-contained profiles. Each profile holds its
 name and the complete list of landmark records. There is no
 master landmark table, membership list, legacy-ID table or inferred renaming.
 It is intentional that a landmark can be repeated in several profiles.
@@ -202,23 +202,38 @@ The selected profile is used both for core calculations and to generate sensor
 observations. Thus `2 ambiguous` gives the core exactly those two map points.
 FOV, noise and other sensor toggles then act on observations independently.
 The simulator uses row indices for ground-truth/report references; there are no
-hand-maintained labels to align. To add a point or profile, edit the list in core
+hand-maintained labels to align. To add a point or profile, edit the list in the simulator
 and restart the simulator. Profiles need not exist in pairs.
 
 ## Core profile selection and one-frame API
 
-Landmark profiles are built into core as Python data. No JSON loading or landmark
-initialization call is needed. The first profile is selected by default:
+Core contains no profile catalog or default field map. The simulator owns its
+profile catalog; a real robot wrapper loads the applicable field configuration.
+Both supply the selected map through the same initialization boundary:
 
 ```python
 import brain_inspired_localization_core as core
 
-core.set_landmark_profile("9 unique")
+core.init_landmarks({
+    "profile": "profile name",
+    "landmarks": [
+        {"name": "goal", "type": "pose", "x_cm": 900, "y_cm": 0},
+        {"name": "goal", "type": "pose", "x_cm": -900, "y_cm": 0},
+    ],
+})
 response = core.step_core(request)
 ```
 
-The GUI sets the currently selected profile in core and synchronizes the existing
-core settings. Neither the profile nor settings are added to the step_core request.
+`profile` is a diagnostic label, not a catalog lookup key. `init_landmarks`
+validates and stores its own copy of the map, returning profile and landmark_count.
+Later caller edits have no effect until init_landmarks is explicitly called again.
+Invalid initialization leaves the previous map intact. Landmark/fused inference
+requires initialization; motion-only inference does not. An explicit empty map
+is allowed. One active map is stored per imported core module.
+
+The GUI initializes the selected map at startup and on selection changes, and
+synchronizes the existing core settings. Neither the profile nor settings are
+added to the step_core request.
 Selecting a profile changes the map; matching follows its names. It does not reset
 learning rates or retain robot belief. The caller supplies the current belief
 and receives the next belief on every call.
@@ -227,19 +242,20 @@ Map-point diagnostic keys are string row indices (`"0"`, `"1"`, ...) in the
 selected profile's landmark list, not sensor identities. Observations supply
 recognition names. Settings remain the existing uppercase core variables.
 
-`step_core` requires a UTC timestamp with exactly three fractional digits (`Z`
-or `+00:00`) and a finite positive time step. Belief, landmark and motion values
+`step_core` requires a timestamp string (no format requirement) and a finite
+positive time step. Belief, landmark and motion values
 must be finite. It shields inputs, delegates to inference and returns detached
 JSON-friendly data. Existing diagnostics remain; `landmark_terms` additionally
 reports actual associations, whether an observation was used, skip reasons,
 precision, Jacobian, J-transpose/P/error terms, update contributions and per-point
-free energy. `diagnostics.settings` records the core settings actually used.
+free energy. `diagnostics.settings` records the core settings actually used;
+`diagnostics.profile` records the active map label.
 
 There is one algorithm implementation: `brain_inspired_localization_core.py`.
 It imports only standard-library modules and contains no GUI, sensor simulation,
-or map-file reads. Its built-in profiles are shared with the simulator. The
-simulator sets the selected profile and existing settings, and processes each
-frame through `core.step_core` using `simulation_step_from_observations`.
+or map-file reads. The simulator supplies its selected profile through
+`init_landmarks`, synchronizes existing settings, and processes each frame
+through `core.step_core` using `simulation_step_from_observations`.
 The map is exactly the selected profile; FOV is a separate sensor setting.
 
 Shared state/transform helpers are imported from core, without copied function

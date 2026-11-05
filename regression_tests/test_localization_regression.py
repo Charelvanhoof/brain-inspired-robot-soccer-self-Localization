@@ -70,7 +70,7 @@ def configured(module, scenario):
         landmarks = profile["landmarks"]
         settings = {name: value for name, value in SETTINGS.items() if name != "DT"}
         settings["ACTIVE_DATA_ASSOCIATION_NAME"] = scenario["association"]
-        core.set_landmark_profile(profile["name"])
+        core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
         for name, value in settings.items():
             setattr(core, name, value)
     return stack
@@ -257,7 +257,7 @@ def capture_baseline():
 
 class LandmarkMapTests(unittest.TestCase):
     def test_profiles_are_self_contained_json_records(self):
-        profiles = json.loads(json.dumps(core.LANDMARK_SCENARIO_PROFILES))
+        profiles = json.loads(json.dumps(sim.LANDMARK_SCENARIO_PROFILES))
         self.assertEqual(profiles, sim.LANDMARK_SCENARIO_PROFILES)
         self.assertEqual(len({profile["name"] for profile in profiles}), len(profiles))
         for profile in profiles:
@@ -268,7 +268,7 @@ class LandmarkMapTests(unittest.TestCase):
         self.assertFalse(hasattr(sim, "LEGACY_LANDMARK_IDS"))
         self.assertFalse(hasattr(sim, "LANDMARK_MAP"))
         self.assertFalse(hasattr(sim, "ACTIVE_DATA_ASSOCIATION_NAME"))
-        self.assertIs(sim.LANDMARK_SCENARIO_PROFILES, core.LANDMARK_SCENARIO_PROFILES)
+        self.assertFalse(hasattr(core, "LANDMARK_SCENARIO_PROFILES"))
 
     def test_unique_and_gated_profiles_hold_their_own_names(self):
         unique = sim.landmark_scenario_profile_by_name("9 unique")
@@ -304,8 +304,7 @@ class LandmarkMapTests(unittest.TestCase):
             dict(name="beacon", type="pose", x_cm=100, y_cm=50),
             dict(name="beacon", type="pose", x_cm=200, y_cm=-50),
         ]}
-        with patch.object(core, "LANDMARK_SCENARIO_PROFILES", [profile]), \
-             patch.object(sim, "LANDMARK_SCENARIO_PROFILES", [profile]), \
+        with patch.object(sim, "LANDMARK_SCENARIO_PROFILES", [profile]), \
              patch.multiple(sim, **SETTINGS, **SENSORS, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["name"]):
             robots = {"actual": sim.make_robot_gc_state(), "belief": sim.make_robot_gc_state(5, 5, 0.1)}
             observed, predicted, _, _ = sim.simulation_inference_step(robots)
@@ -468,8 +467,7 @@ class OrientationTrackingTests(unittest.TestCase):
             landmarks = deepcopy(sim.landmark_scenario_profile_by_name("9 ambiguous")["landmarks"])
             landmarks[0]["type"] = "orientation"  # Center is normally a pose landmark.
             with self.subTest(module=module.__name__), configured(module, dict(association="Gated nearest", profile="9")):
-                with patch.object(module, "LANDMARK_SCENARIO_PROFILES", [dict(name="test-type", landmarks=landmarks)]):
-                    module.set_landmark_profile("test-type")
+                module.init_landmarks({"profile": "test-type", "landmarks": landmarks})
                 belief = module.make_robot_gc_state(200, -100, 0.25)
                 original = deepcopy(belief)
                 observations = module.calculate_angle({"center_obs": {"name": "center", "x_rcs_cm": 50, "y_rcs_cm": 20}})
@@ -544,10 +542,11 @@ class RecognitionNameTests(unittest.TestCase):
 
     def test_gui_sets_profile_and_settings_without_reselecting_each_frame(self):
         with configured(sim, dict(association="Gated nearest", profile="9")):
-            core.set_landmark_profile("2 ambiguous")
+            profile = sim.landmark_scenario_profile_by_name("2 ambiguous")
+            core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
             robots = {"actual": sim.make_robot_gc_state(200, -100, 0.25),
                       "belief": sim.make_robot_gc_state(220, -115, 0.3)}
-            with patch.object(core, "set_landmark_profile", wraps=core.set_landmark_profile) as select:
+            with patch.object(core, "init_landmarks", wraps=core.init_landmarks) as select:
                 sim.simulation_inference_step(robots)
                 sim.simulation_inference_step(robots)
                 self.assertEqual(select.call_count, 1)
