@@ -17,7 +17,8 @@ import brain_inspired_localization_core as core
 class CoreInterfaceTests(unittest.TestCase):
     def setUp(self):
         # Each test restores the prior module configuration, including legacy views.
-        names = (*core.CORE_SETTING_DEFAULTS, "LANDMARK_MAP", "LANDMARK_POINT_IDS", "LANDMARKS", "LANDMARK_METADATA", "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME")
+        from regression_tests.test_localization_regression import CORE_STATE_NAMES
+        names = CORE_STATE_NAMES
         restore = patch.multiple(core, **deepcopy({name: getattr(core, name) for name in names}))
         restore.start()
         self.addCleanup(restore.stop)
@@ -28,6 +29,12 @@ class CoreInterfaceTests(unittest.TestCase):
             dict(name="bearing_cue", type="orientation", x_cm=3000, y_cm=200),
         ]
 
+        self.learning_rates = {
+            "landmark_xy": 1.6, "landmark_theta": 2.20325e-05 * 0.8,
+            "motion_velocity_xy": 4.0, "motion_velocity_theta": 4.0,
+            "motion_acceleration_xy": 40.0, "motion_acceleration_theta": 40.0,
+        }
+        core.init_learning_rates(self.learning_rates)
         core.init_landmarks({"profile": "test-map", "landmarks": self.landmarks})
 
     def request(self):
@@ -47,6 +54,9 @@ class CoreInterfaceTests(unittest.TestCase):
                     "import brain_inspired_localization_core as core; "
                     "assert core.LANDMARK_MAP == [] and core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME is None; "
                     "assert not hasattr(core, 'LANDMARK_SCENARIO_PROFILES'); "
+                    "assert core.LEARNING_RATES is None; "
+                    "assert not hasattr(core, 'LR_XY') and not hasattr(core, 'MOTION_LR_VEL_XY'); "
+                    "assert not hasattr(core, 'CORE_SETTING_DEFAULTS'); "
                     "assert 'pygame' not in sys.modules and 'matplotlib' not in sys.modules; "
                     "assert not hasattr(core, 'initialize_core'); "
                     "assert not hasattr(core, 'NOISE_ENABLED')")
@@ -54,18 +64,18 @@ class CoreInterfaceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_profile_selection_replaces_map_and_association_without_changing_gains(self):
-        core.LR_XY = 1.6
         core.init_landmarks({"profile": "two corners", "landmarks": self.landmarks[:2]})
         self.assertEqual(core.landmark_candidate_ids_for_name("corner"), ["0", "1"])
         core.init_landmarks({"profile": "center only", "landmarks": self.landmarks[2:3]})
         self.assertEqual(core.unique_landmark_candidate_id_for_name("center"), "0")
-        self.assertEqual(core.ACTIVE_DATA_ASSOCIATION_NAME, "Unique ID")
-        self.assertEqual(core.LR_XY, 1.6)
+        self.assertFalse(hasattr(core, "ACTIVE_DATA_ASSOCIATION_NAME"))
+        self.assertFalse(hasattr(core, "DATA_ASSOCIATION_UNIQUE_ID_NAME"))
+        self.assertFalse(hasattr(core, "DATA_ASSOCIATION_UNIQUE_DIRECT_NAME"))
+        self.assertEqual(core.LEARNING_RATES["landmark_xy"], 1.6)
         self.assertFalse(hasattr(core, "initialize_core"))
         self.assertFalse(hasattr(core, "get_core_configuration"))
 
     def test_request_response_and_diagnostics_are_detached_json_data(self):
-        core.LR_XY = 1.6
         request = json.loads(json.dumps(self.request()))
         original = deepcopy(request)
         response = core.step_core(request)
@@ -73,10 +83,10 @@ class CoreInterfaceTests(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(response, allow_nan=False)), response)
         reference = deepcopy(response)
         response["belief_fcs_gc"]["x"][0] = 999
-        response["diagnostics"]["settings"]["LR_XY"] = 999
+        response["diagnostics"]["settings"]["learning_rates"]["landmark_xy"] = 999
         response["diagnostics"]["landmark_terms"][0]["eps"][0] = 999
         self.assertEqual(core.step_core(request), reference)
-        self.assertEqual(core.LR_XY, 1.6)
+        self.assertEqual(core.LEARNING_RATES["landmark_xy"], 1.6)
 
     def test_landmark_initialization_copies_data_and_requires_explicit_reload(self):
         profile = {"profile": "profile name", "landmarks": deepcopy(self.landmarks)}
@@ -99,6 +109,98 @@ class CoreInterfaceTests(unittest.TestCase):
         profile["landmarks"][0]["y_cm"] = 75
         core.init_landmarks(profile)  # Reloading also works with the same profile label.
         self.assertEqual(core.LANDMARKS["0"], (500, 75))
+
+    def test_learning_rate_initialization_copies_data_and_preserves_map_and_belief(self):
+        supplied = self.learning_rates.copy()
+        request = self.request()
+        original_request = deepcopy(request)
+        original_map = deepcopy(core.LANDMARK_MAP)
+        result = core.init_learning_rates(supplied)
+        self.assertEqual(result, supplied)
+        reference = core.step_core(request)
+        supplied["landmark_xy"] = 0.25
+        result["landmark_theta"] = 0
+        self.assertEqual(core.step_core(request), reference)
+        core.init_learning_rates(supplied)
+        self.assertEqual(core.LEARNING_RATES, supplied)
+        self.assertEqual(core.step_core(request)["diagnostics"]["settings"]["learning_rates"], supplied)
+        self.assertNotEqual(core.step_core(request)["belief_fcs_gc"], reference["belief_fcs_gc"])
+        self.assertEqual(core.LANDMARK_MAP, original_map)
+        self.assertEqual(request, original_request)
+
+    def test_invalid_learning_rates_preserve_active_configuration(self):
+        reference = core.step_core(self.request())
+        invalid = [None, {}, {**self.learning_rates, "unknown_rate": 1}]
+        for name in self.learning_rates:
+            missing = self.learning_rates.copy()
+            del missing[name]
+            invalid.append(missing)
+            for value in (-1, math.nan, math.inf, None, True, "1.6"):
+                invalid.append({**self.learning_rates, name: value})
+        for supplied in invalid:
+            with self.subTest(supplied=supplied), self.assertRaises(ValueError):
+                core.init_learning_rates(supplied)
+            self.assertEqual(core.LEARNING_RATES, self.learning_rates)
+            self.assertEqual(core.step_core(self.request()), reference)
+
+    def test_all_inference_modes_require_learning_rate_initialization(self):
+        request = self.request()
+        with patch.object(core, "LEARNING_RATES", None):
+            for algorithm in ("landmark only", "motion only", "motion+landmark"):
+                request["algorithm_name"] = algorithm
+                original = deepcopy(request["belief_fcs_gc"])
+                with self.subTest(algorithm=algorithm), self.assertRaisesRegex(ValueError, "init_learning_rates"):
+                    core.step_core(request)
+                with self.assertRaisesRegex(ValueError, "init_learning_rates"):
+                    core.inference_step_from_observations(
+                        request["belief_fcs_gc"], motion_observation=request["motion_observation"],
+                        algorithm_name=algorithm, step_dt_s=0.025)
+                self.assertEqual(request["belief_fcs_gc"], original)
+            with self.assertRaisesRegex(ValueError, "init_learning_rates"):
+                core.motion_inference_step(request["belief_fcs_gc"], request["motion_observation"])
+            with self.assertRaisesRegex(ValueError, "init_learning_rates"):
+                core.landmark_inference_step(request["belief_fcs_gc"], {})
+
+    def test_zero_learning_rates_disable_corrections_but_keep_generalized_motion(self):
+        core.init_learning_rates(dict.fromkeys(self.learning_rates, 0))
+        request = self.request()
+        request["algorithm_name"] = "landmark only"
+        request["belief_fcs_gc"]["theta"][0] = 0
+        self.assertEqual(core.step_core(request)["belief_fcs_gc"], request["belief_fcs_gc"])
+        request["algorithm_name"] = "motion+landmark"
+        for axis in ("x", "y", "theta"):
+            request["belief_fcs_gc"][axis][1:] = [2, 3]
+        response = core.step_core(request)
+        for axis in ("x", "y", "theta"):
+            position, velocity, acceleration = request["belief_fcs_gc"][axis]
+            self.assertAlmostEqual(response["belief_fcs_gc"][axis][0], position + 0.025 * velocity)
+            self.assertAlmostEqual(response["belief_fcs_gc"][axis][1], velocity + 0.025 * acceleration)
+            self.assertEqual(response["belief_fcs_gc"][axis][2], acceleration)
+
+    def test_each_learning_rate_controls_its_own_correction(self):
+        targets = {
+            "landmark_xy": {("x", 0), ("y", 0)},
+            "landmark_theta": {("theta", 0)},
+            "motion_velocity_xy": {("x", 1), ("y", 1)},
+            "motion_velocity_theta": {("theta", 1)},
+            "motion_acceleration_xy": {("x", 2), ("y", 2)},
+            "motion_acceleration_theta": {("theta", 2)},
+        }
+        for name, expected in targets.items():
+            request = self.request()
+            request["algorithm_name"] = "landmark only" if name.startswith("landmark") else "motion only"
+            for axis in ("x", "y", "theta"):
+                request["belief_fcs_gc"][axis][1:] = [2, 3]
+            rates = dict.fromkeys(self.learning_rates, 0.0)
+            core.init_learning_rates(rates)
+            baseline = core.step_core(request)["belief_fcs_gc"]
+            rates[name] = 0.5
+            core.init_learning_rates(rates)
+            updated = core.step_core(request)["belief_fcs_gc"]
+            changed = {(axis, order) for axis in ("x", "y", "theta") for order in range(3)
+                       if not math.isclose(updated[axis][order], baseline[axis][order], abs_tol=1e-12)}
+            with self.subTest(rate=name):
+                self.assertEqual(changed, expected)
 
     def test_invalid_landmark_initialization_preserves_active_configuration(self):
         reference = core.step_core(self.request())
@@ -152,6 +254,7 @@ class CoreInterfaceTests(unittest.TestCase):
         used = [term for term in diagnostics["landmark_terms"] if term["used_for_update"]]
         ignored = [term for term in diagnostics["landmark_terms"] if not term["used_for_update"]]
         self.assertEqual(len(used), 3)
+        self.assertEqual({term["association_name"] for term in used}, {"direct", "gated nearest"})
         self.assertEqual(len(ignored), 1)
         self.assertEqual(ignored[0]["skip_reason"], "orientation_landmark")
         self.assertAlmostEqual(sum(term["free_energy_contribution"] for term in used), diagnostics["landmark_free_energy"])
@@ -210,8 +313,10 @@ class CoreInterfaceTests(unittest.TestCase):
         for case in data["scenarios"]:
             with self.subTest(case=case["name"]):
                 mapped = regression.profile_for_case(case)["landmarks"]
-                settings = {key: value for key, value in regression.SETTINGS.items() if key != "DT"}
-                settings["ACTIVE_DATA_ASSOCIATION_NAME"] = case["association"]
+                core.init_learning_rates({name: regression.SETTINGS[setting]
+                                          for name, setting in regression.LEARNING_RATE_SETTINGS.items()})
+                settings = {key: value for key, value in regression.SETTINGS.items()
+                            if key != "DT" and key not in regression.LEARNING_RATE_SETTINGS.values()}
                 profile = regression.profile_for_case(case)
                 core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
                 for name, value in settings.items():

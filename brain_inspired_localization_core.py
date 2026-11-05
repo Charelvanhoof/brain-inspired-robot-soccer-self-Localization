@@ -1,58 +1,80 @@
-# Code for the Robot_Soccer_Self_Localization_with_Active_Inference
-# Based on version POC V29
+# Code for the core Robot_Soccer_Self_Localization_with_Active_Inference
+# This code runs on the robot to execute the localization algorithm.
+
 import math
 from copy import deepcopy
 from collections import Counter
 
 
 # =========================
-# CORE
+# CONFIGURATION
 # =========================
-# Algorithm settings and caller-supplied landmark map. Belief remains caller-owned.
+
+GENERALIZED_COORDINATE_ORDER = 2
 DT = 0.020
 PI_CAM = PI_ODO = PI_IMU = 1.0
-DEFAULT_ANGLE_LR = 2.20325e-05
-LR_XY = 2.0
-LR_ANGLE = DEFAULT_ANGLE_LR
 ANGLE_WEIGHT = 1.0
+
 LANDMARK_ONLY_ALGORITHM_NAME = "landmark only"
 MOTION_ONLY_ALGORITHM_NAME = "motion only"
 FUSED_MOTION_LANDMARK_ALGORITHM_NAME = "motion+landmark"
 ACTIVE_ALGORITHM_NAME = FUSED_MOTION_LANDMARK_ALGORITHM_NAME
-DATA_ASSOCIATION_GATED_NEAREST_NAME = "Gated nearest"
-DATA_ASSOCIATION_UNIQUE_ID_NAME = "Unique ID"
-DATA_ASSOCIATION_UNIQUE_DIRECT_NAME = "Unique direct"
-DATA_ASSOCIATION_ALGORITHM_NAMES = [DATA_ASSOCIATION_GATED_NEAREST_NAME, DATA_ASSOCIATION_UNIQUE_ID_NAME]
-ACTIVE_DATA_ASSOCIATION_NAME = DATA_ASSOCIATION_GATED_NEAREST_NAME
-LANDMARK_ASSOCIATION_GATE_CM = 1000.0
-GENERALIZED_COORDINATE_ORDER = 2
+
+PRECISION_DISTANCE_MODIFIER_ENABLED = True
 DISTANCE_PRECISION_REF_CM = 600.0
 DISTANCE_PRECISION_MIN_FACTOR = 0.15
-PRECISION_DISTANCE_MODIFIER_ENABLED = True
-MOTION_LR_VEL_XY = MOTION_LR_VEL_THETA = 5.0
-MOTION_LR_ACC_XY = MOTION_LR_ACC_THETA = 50.0
+
+LANDMARK_ASSOCIATION_GATE_CM = 1000.0
 LANDMARK_MAP = []
 LANDMARK_POINT_IDS = ()
 LANDMARKS = {}
 LANDMARK_METADATA = {}
+
 ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = None
+LEARNING_RATES = None
+
+# =========================
+# INITIALIZATION
+# =========================
+
+def init_learning_rates(learning_rates):
+    # Input:
+    #   learning_rates: all six named, finite, non-negative correction rates.
+    # Output:
+    #   independent dictionary of the applied rates.
+    # Function:
+    #   validate the complete request before replacing the active rates;
+    #   leave landmarks, belief, and other core settings unchanged.
+    global LEARNING_RATES
+    names = ("landmark_xy", "landmark_theta", "motion_velocity_xy",
+             "motion_velocity_theta", "motion_acceleration_xy", "motion_acceleration_theta")
+
+    # Validate and copy all rates. Zero disables the corresponding correction.
+    if not isinstance(learning_rates, dict) or set(learning_rates) != set(names):
+        raise ValueError("learning_rates must contain exactly: " + ", ".join(names))
+    applied = {}
+    for name in names:
+        value = learning_rates[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a finite non-negative number")
+        try:
+            value = float(value)
+        except OverflowError:
+            raise ValueError(f"{name} must be a finite non-negative number") from None
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be a finite non-negative number")
+        applied[name] = value
+
+    # Apply only after the full request succeeds; return a separate copy.
+    LEARNING_RATES = applied
+    return applied.copy()
 
 
-CORE_SETTING_DEFAULTS = {
-    name: globals()[name] for name in (
-        "PI_CAM", "PI_ODO", "PI_IMU", "LR_XY", "LR_ANGLE", "ANGLE_WEIGHT",
-        "MOTION_LR_VEL_XY", "MOTION_LR_ACC_XY", "MOTION_LR_VEL_THETA", "MOTION_LR_ACC_THETA",
-        "PRECISION_DISTANCE_MODIFIER_ENABLED", "DISTANCE_PRECISION_REF_CM",
-        "DISTANCE_PRECISION_MIN_FACTOR", "LANDMARK_ASSOCIATION_GATE_CM", "ACTIVE_DATA_ASSOCIATION_NAME",
-    )
-}
-
-
-def landmark_profile_association_name(profile):
-    """Describe recognition ambiguity for reports; matching uses each observed name."""
-    names = [landmark["name"] for landmark in profile["landmarks"]]
-    return (DATA_ASSOCIATION_UNIQUE_ID_NAME if len(set(names)) == len(names)
-            else DATA_ASSOCIATION_GATED_NEAREST_NAME)
+def _require_learning_rates():
+    """Return initialized rates before any inference state is updated."""
+    if LEARNING_RATES is None:
+        raise ValueError("Call init_learning_rates(learning_rates) before inference")
+    return LEARNING_RATES
 
 
 def init_landmarks(profile):
@@ -89,7 +111,6 @@ def init_landmarks(profile):
     counts = Counter(landmark["name"] for landmark in landmarks)
     globals().update(
         ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["profile"],
-        ACTIVE_DATA_ASSOCIATION_NAME=landmark_profile_association_name({"landmarks": landmarks}),
         LANDMARK_MAP=landmarks,
         LANDMARK_POINT_IDS=point_ids,
         LANDMARKS={key: (landmark["x_cm"], landmark["y_cm"])
@@ -100,6 +121,10 @@ def init_landmarks(profile):
     )
     return {"profile": profile["profile"], "landmark_count": len(landmarks)}
 
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
 
 def landmark_name(landmark_id):
     return LANDMARK_METADATA[landmark_id]["name"]
@@ -185,6 +210,10 @@ def obs_list_to_map(obs_list):
     #   used so landmark predictions or named observations can be accessed directly during inference and analysis
     return {o.get("id", o.get("obs_id")): o for o in obs_list}
 
+# =========================
+# CORE INFERENCE FUNCTIONS
+# =========================
+
 
 def motion_prediction_error(belief_fcs_gc, y_motion_obs):
     # Input:
@@ -244,6 +273,12 @@ def motion_inference_step(belief_fcs_gc, y_motion_obs, step_dt_s=DT):
     #   performs one active-inference motion update step and updates the belief_fcs_gc state
     #   returns also motion_terms and free_energy as diagnostic/reporting outputs
 
+    rates = _require_learning_rates()
+    lr_vel_xy = rates["motion_velocity_xy"]
+    lr_vel_theta = rates["motion_velocity_theta"]
+    lr_acc_xy = rates["motion_acceleration_xy"]
+    lr_acc_theta = rates["motion_acceleration_theta"]
+
     # Calculate the D-translated motion prediction error D*mu - f(y). In FCS.
     motion_terms = motion_prediction_error(belief_fcs_gc, y_motion_obs)
 
@@ -251,18 +286,18 @@ def motion_inference_step(belief_fcs_gc, y_motion_obs, step_dt_s=DT):
     # mu_dot = D*mu - D^T*Pi*(D*mu - f(y))
     x_mu_dot = [
         belief_fcs_gc["x"][1] - 0.0,
-        belief_fcs_gc["x"][2] - MOTION_LR_VEL_XY * PI_ODO * motion_terms["x"]["vel_error"],
-        0.0                   - MOTION_LR_ACC_XY * PI_IMU * motion_terms["x"]["acc_error"],
+        belief_fcs_gc["x"][2] - lr_vel_xy * PI_ODO * motion_terms["x"]["vel_error"],
+        0.0                   - lr_acc_xy * PI_IMU * motion_terms["x"]["acc_error"],
     ]
     y_mu_dot = [
         belief_fcs_gc["y"][1] - 0.0,
-        belief_fcs_gc["y"][2] - MOTION_LR_VEL_XY * PI_ODO * motion_terms["y"]["vel_error"],
-        0.0                   - MOTION_LR_ACC_XY * PI_IMU * motion_terms["y"]["acc_error"],
+        belief_fcs_gc["y"][2] - lr_vel_xy * PI_ODO * motion_terms["y"]["vel_error"],
+        0.0                   - lr_acc_xy * PI_IMU * motion_terms["y"]["acc_error"],
     ]
     theta_mu_dot = [
         belief_fcs_gc["theta"][1] - 0.0,
-        belief_fcs_gc["theta"][2] - MOTION_LR_VEL_THETA * PI_ODO * motion_terms["theta"]["vel_error"],
-        0.0                       - MOTION_LR_ACC_THETA * PI_IMU * motion_terms["theta"]["acc_error"],
+        belief_fcs_gc["theta"][2] - lr_vel_theta * PI_ODO * motion_terms["theta"]["vel_error"],
+        0.0                       - lr_acc_theta * PI_IMU * motion_terms["theta"]["acc_error"],
     ]
 
     # Euler forward update rule mu(t+dt) = mu(t) + dt * mu_dot
@@ -602,23 +637,19 @@ def calculate_angle(y_obs_map):
 def associate_landmark_observation(
     y_obs,
     yhat_map,
-    association_name=ACTIVE_DATA_ASSOCIATION_NAME,
     used_candidate_ids=None,
 ):
     # Input:
     #   y_obs: prepared named landmark observation in RCS with calculated angle_rad
     #   yhat_map: predicted candidate landmark observations in RCS, keyed by internal landmark id
-    #   association_name: selected data-association strategy
     #   used_candidate_ids: candidates already consumed by this inference step
     # Output:
     #   association record with chosen candidate id, prediction errors, and gate status
     # Function:
     #   resolves one named sensory observation to an internal landmark candidate
-    #   using the selected ambiguity/data-association strategy
+    #   matching unique names directly and repeated names by gated nearest prediction
     # Find candidates solely by the recognition name; never read simulator identity.
     used_candidate_ids = used_candidate_ids or set()
-    if association_name not in {DATA_ASSOCIATION_GATED_NEAREST_NAME, DATA_ASSOCIATION_UNIQUE_ID_NAME}:
-        raise ValueError(f"Unknown landmark association algorithm: {association_name}")
     unique_candidate_id = unique_landmark_candidate_id_for_name(y_obs["name"])
     if unique_candidate_id is not None and unique_candidate_id in yhat_map and unique_candidate_id not in used_candidate_ids:
         eps, position_error_cm, error_score = landmark_prediction_error(y_obs, yhat_map[unique_candidate_id])
@@ -628,8 +659,7 @@ def associate_landmark_observation(
             "eps": eps,
             "position_error_cm": position_error_cm,
             "error_score": error_score,
-            "association_name": (DATA_ASSOCIATION_UNIQUE_ID_NAME if association_name == DATA_ASSOCIATION_UNIQUE_ID_NAME
-                                 else DATA_ASSOCIATION_UNIQUE_DIRECT_NAME),
+            "association_name": "direct",
         }
 
     candidates = [
@@ -648,7 +678,7 @@ def associate_landmark_observation(
             "eps": eps,
             "position_error_cm": position_error_cm,
             "error_score": error_score,
-            "association_name": association_name,
+            "association_name": "gated nearest",
         }
         if best is None or candidate["error_score"] < best["error_score"]:
             best = candidate
@@ -660,7 +690,7 @@ def associate_landmark_observation(
             "eps": [0.0, 0.0, 0.0],
             "position_error_cm": None,
             "error_score": None,
-            "association_name": association_name,
+            "association_name": "gated nearest",
         }
     return best
 
@@ -681,6 +711,9 @@ def landmark_inference_step(belief_fcs_gc, y_obs_map, step_dt_s=DT, diagnostics=
     #   returns yhat_map and free_energy as diagnostic/reporting outputs
     #   No generalized coordinates, only top row / positions (landmarks don’t move)
 
+    rates = _require_learning_rates()
+    lr_xy = rates["landmark_xy"]
+    lr_theta = rates["landmark_theta"]
     if ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME is None:
         raise ValueError("Call init_landmarks(profile) before landmark inference")
 
@@ -698,7 +731,6 @@ def landmark_inference_step(belief_fcs_gc, y_obs_map, step_dt_s=DT, diagnostics=
         association = associate_landmark_observation(
             y_obs,
             yhat_map,
-            ACTIVE_DATA_ASSOCIATION_NAME,
             used_candidate_ids,
         )
         term = {"obs_id": obs_id, **association, "used_for_update": False}
@@ -725,11 +757,11 @@ def landmark_inference_step(belief_fcs_gc, y_obs_map, step_dt_s=DT, diagnostics=
         # calculate J^T*P*eps for a single landmark
         g = JT_P_eps_single(J, eps, precision)
         term.update(used_for_update=True, precision=precision, jacobian=J,
-                    jt_p_eps=g, mu_dot_contribution=[LR_XY * g[0], LR_XY * g[1], LR_ANGLE * g[2]],
+                    jt_p_eps=g, mu_dot_contribution=[lr_xy * g[0], lr_xy * g[1], lr_theta * g[2]],
                     free_energy_contribution=precision * sum(value * value for value in eps))
-        mu_dot[0] += LR_XY * g[0]
-        mu_dot[1] += LR_XY * g[1]
-        mu_dot[2] += LR_ANGLE * g[2]
+        mu_dot[0] += lr_xy * g[0]
+        mu_dot[1] += lr_xy * g[1]
+        mu_dot[2] += lr_theta * g[2]
         # Calculate the Free energy contribution
         free_energy += precision * (eps[0] * eps[0] + eps[1] * eps[1] + eps[2] * eps[2])
 
@@ -878,6 +910,9 @@ def step_core(request):
         "diagnostics": deepcopy(diagnostics),
     }
 
+# =========================
+# PUBLIC INFERENCE STEP 
+# =========================
 
 def inference_step_from_observations(
     belief_fcs_gc,
@@ -899,6 +934,7 @@ def inference_step_from_observations(
     #   performs one headless active-inference update using caller-supplied sensor data
     #   prepares landmark observations by calculating angle_rad from x_rcs_cm and y_rcs_cm
     #   this is the core boundary intended for real robot / external software integration
+    _require_learning_rates()
     if algorithm_uses_landmarks(algorithm_name) and ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME is None:
         raise ValueError("Call init_landmarks(profile) before landmark inference")
     free_energy = 0.0
@@ -942,7 +978,15 @@ def inference_step_from_observations(
         "y_hat": yhat_map,
         "landmark_terms": landmark_terms,
         "landmark_prediction_gc": landmark_prediction_gc,
-        "settings": {name: globals()[name] for name in CORE_SETTING_DEFAULTS},
+        "settings": {
+            "learning_rates": LEARNING_RATES.copy(),
+            "PI_CAM": PI_CAM, "PI_ODO": PI_ODO, "PI_IMU": PI_IMU,
+            "ANGLE_WEIGHT": ANGLE_WEIGHT,
+            "PRECISION_DISTANCE_MODIFIER_ENABLED": PRECISION_DISTANCE_MODIFIER_ENABLED,
+            "DISTANCE_PRECISION_REF_CM": DISTANCE_PRECISION_REF_CM,
+            "DISTANCE_PRECISION_MIN_FACTOR": DISTANCE_PRECISION_MIN_FACTOR,
+            "LANDMARK_ASSOCIATION_GATE_CM": LANDMARK_ASSOCIATION_GATE_CM,
+        },
     }
     return belief_fcs_gc, diagnostics
 

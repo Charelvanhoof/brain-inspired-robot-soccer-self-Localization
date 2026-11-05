@@ -32,6 +32,18 @@ SETTINGS = dict(DT=0.025, PI_CAM=1.0, PI_ODO=1.0, PI_IMU=1.0,
                 PRECISION_DISTANCE_MODIFIER_ENABLED=True,
                 DISTANCE_PRECISION_REF_CM=600.0, DISTANCE_PRECISION_MIN_FACTOR=0.15,
                 LANDMARK_ASSOCIATION_GATE_CM=1000.0)
+LEARNING_RATE_SETTINGS = {
+    "landmark_xy": "LR_XY", "landmark_theta": "LR_ANGLE",
+    "motion_velocity_xy": "MOTION_LR_VEL_XY", "motion_velocity_theta": "MOTION_LR_VEL_THETA",
+    "motion_acceleration_xy": "MOTION_LR_ACC_XY", "motion_acceleration_theta": "MOTION_LR_ACC_THETA",
+}
+CORE_STATE_NAMES = ("LEARNING_RATES", "PI_CAM", "PI_ODO", "PI_IMU", "ANGLE_WEIGHT",
+                    "PRECISION_DISTANCE_MODIFIER_ENABLED", "DISTANCE_PRECISION_REF_CM",
+                    "DISTANCE_PRECISION_MIN_FACTOR", "LANDMARK_ASSOCIATION_GATE_CM",
+                    "LANDMARK_MAP", "LANDMARK_POINT_IDS", "LANDMARKS", "LANDMARK_METADATA",
+                    "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME")
+
+
 SENSORS = dict(NOISE_ENABLED=False, VIEWING_ANGLE_ENABLED=True,
                VIEWING_ANGLE_DEG=110.0, VIEWING_HALF_ANGLE_RAD=math.radians(55),
                LANDMARK_DROPOUT_ENABLED=False, LANDMARK_OBSTRUCTION_ENABLED=False,
@@ -65,11 +77,12 @@ def configured(module, scenario):
         stack.enter_context(patch.multiple(sim, **SETTINGS, **SENSORS,
                                           ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["name"]))
     else:
-        names = (*core.CORE_SETTING_DEFAULTS, "LANDMARK_MAP", "LANDMARK_POINT_IDS", "LANDMARKS", "LANDMARK_METADATA", "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME")
+        names = CORE_STATE_NAMES
         stack.enter_context(patch.multiple(core, **deepcopy({name: getattr(core, name) for name in names})))
         landmarks = profile["landmarks"]
-        settings = {name: value for name, value in SETTINGS.items() if name != "DT"}
-        settings["ACTIVE_DATA_ASSOCIATION_NAME"] = scenario["association"]
+        core.init_learning_rates({name: SETTINGS[setting] for name, setting in LEARNING_RATE_SETTINGS.items()})
+        settings = {name: value for name, value in SETTINGS.items()
+                    if name != "DT" and name not in LEARNING_RATE_SETTINGS.values()}
         core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
         for name, value in settings.items():
             setattr(core, name, value)
@@ -143,7 +156,13 @@ def replay(module, scenario, public=False):
 
     def record_association(*args, **kwargs):
         result = associate(*args, **kwargs)
-        associations.append(dict(deepcopy(result), candidate_id=legacy_point_id(result["candidate_id"])))
+        # Translate only diagnostic wording for the unchanged historical baseline.
+        if result["association_name"] == "direct":
+            legacy_name = "Unique ID" if scenario["association"] == "Unique ID" else "Unique direct"
+        else:
+            legacy_name = "Gated nearest"
+        associations.append(dict(deepcopy(result), candidate_id=legacy_point_id(result["candidate_id"]),
+                                 association_name=legacy_name))
         return result
 
     with configured(module, scenario), patch.object(core, "associate_landmark_observation", side_effect=record_association):
@@ -276,11 +295,11 @@ class LandmarkMapTests(unittest.TestCase):
         self.assertEqual(len(unique["landmarks"]), 9)
         self.assertEqual(len({row["name"] for row in unique["landmarks"]}), 9)
         self.assertEqual(sum(row["name"] == "corner" for row in gated["landmarks"]), 4)
-        self.assertEqual(core.landmark_profile_association_name(unique), "Unique ID")
-        self.assertEqual(core.landmark_profile_association_name(gated), "Gated nearest")
+        self.assertEqual(sim.landmark_profile_association_name(unique), "Unique names")
+        self.assertEqual(sim.landmark_profile_association_name(gated), "Repeated names")
         # The records determine uniqueness, even when the profile name says otherwise.
-        self.assertEqual(core.landmark_profile_association_name(
-            sim.landmark_scenario_profile_by_name("1 ambiguous")), "Unique ID")
+        self.assertEqual(sim.landmark_profile_association_name(
+            sim.landmark_scenario_profile_by_name("1 ambiguous")), "Unique names")
         self.assertEqual([(r["x_cm"], r["y_cm"]) for r in unique["landmarks"]],
                          [(r["x_cm"], r["y_cm"]) for r in gated["landmarks"]])
 
@@ -293,9 +312,9 @@ class LandmarkMapTests(unittest.TestCase):
 
     def test_association_shortcut_selects_an_existing_profile(self):
         with configured(sim, dict(association="Gated nearest", profile="2")):
-            sim.select_association_profile("Unique ID")
+            sim.select_association_profile("Unique names")
             self.assertEqual(sim.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME, "2 unique")
-            self.assertEqual(sim.active_association_name(), "Unique ID")
+            self.assertEqual(sim.active_association_name(), "Unique names")
             self.assertEqual([row["name"] for row in sim.active_landmark_scenario_profile()["landmarks"]],
                              ["goal_opponent", "goal_own"])
 
@@ -312,14 +331,14 @@ class LandmarkMapTests(unittest.TestCase):
             self.assertEqual(len(observed), 2)
             self.assertEqual(len(predicted), 2)
             self.assertEqual({row["name"] for row in observed.values()}, {"beacon"})
-            self.assertEqual(sim.configured_association_names(), ["Gated nearest"])
+            self.assertEqual(sim.configured_association_names(), ["Repeated names"])
 
     def test_profiles_do_not_require_an_equivalent_other_mode(self):
         profiles = [sim.landmark_scenario_profile_by_name("9 unique"),
                     sim.landmark_scenario_profile_by_name("2 ambiguous")]
         with patch.object(sim, "LANDMARK_SCENARIO_PROFILES", profiles), \
              patch.object(sim, "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME", "9 unique"):
-            sim.select_association_profile("Gated nearest")
+            sim.select_association_profile("Repeated names")
             self.assertEqual(sim.active_landmark_scenario_profile()["name"], "2 ambiguous")
 
     def test_profile_batch_export_keeps_complete_profile_snapshots(self):
@@ -338,7 +357,7 @@ class LandmarkMapTests(unittest.TestCase):
                 result = sim.export_paper_lm_dataset(setup, lambda experiment: None, duration_s=0.05)
                 metadata = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
                 self.assertEqual(len(metadata["landmark_profiles"]), 6 if mode == "Unique ID" else 5)
-                self.assertTrue(all(core.landmark_profile_association_name(profile) == mode and "landmarks" in profile
+                self.assertTrue(all(sim.landmark_profile_association_name(profile) == ("Unique names" if mode == "Unique ID" else "Repeated names") and "landmarks" in profile
                                     for profile in metadata["landmark_profiles"]))
                 with open(result["csv_path"], newline="", encoding="utf-8") as stream:
                     rows = list(csv.DictReader(stream))
@@ -511,13 +530,14 @@ class RecognitionNameTests(unittest.TestCase):
                     state = module.make_robot_gc_state(200, -100, 0.25)
                     predictions = module.obs_list_to_map(module.landmarks_fcs_2_rcs(state, module.LANDMARKS))
                     obs = NamedObservation({key: value for key, value in predictions["3"].items() if key != "id"})
-                    result = module.associate_landmark_observation(obs, predictions, mode)
+                    result = module.associate_landmark_observation(obs, predictions)
                     self.assertTrue(result["accepted"])
                     self.assertEqual(result["candidate_id"], "3")
+                    self.assertEqual(result["association_name"], "direct" if mode == "Unique ID" else "gated nearest")
                     self.assertFalse(module.associate_landmark_observation(
-                        obs, predictions, mode, {"3"})["accepted"])
+                        obs, predictions, {"3"})["accepted"])
                     unknown = NamedObservation(obs, name="not_in_map")
-                    self.assertFalse(module.associate_landmark_observation(unknown, predictions, mode)["accepted"])
+                    self.assertFalse(module.associate_landmark_observation(unknown, predictions)["accepted"])
 
     def test_simulator_passes_only_names_and_keeps_report_identity(self):
         for mode in ("Gated nearest", "Unique ID"):
@@ -544,20 +564,25 @@ class RecognitionNameTests(unittest.TestCase):
         with configured(sim, dict(association="Gated nearest", profile="9")):
             profile = sim.landmark_scenario_profile_by_name("2 ambiguous")
             core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
+            core.init_learning_rates({name: 0 for name in LEARNING_RATE_SETTINGS})
             robots = {"actual": sim.make_robot_gc_state(200, -100, 0.25),
                       "belief": sim.make_robot_gc_state(220, -115, 0.3)}
-            with patch.object(core, "init_landmarks", wraps=core.init_landmarks) as select:
+            with patch.object(core, "init_landmarks", wraps=core.init_landmarks) as select, \
+                 patch.object(core, "init_learning_rates", wraps=core.init_learning_rates) as rates:
                 sim.simulation_inference_step(robots)
                 sim.simulation_inference_step(robots)
                 self.assertEqual(select.call_count, 1)
+                self.assertEqual(rates.call_count, 1)
                 with patch.object(sim, "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME", "1 ambiguous"):
                     sim.simulation_inference_step(robots)
                     self.assertEqual(select.call_count, 2)
                     self.assertEqual(len(core.LANDMARK_MAP), 1)
+                    self.assertEqual(rates.call_count, 1)
                 with patch.object(sim, "LR_XY", 1.7):
                     sim.simulation_inference_step(robots)
                     self.assertEqual(select.call_count, 3)
-                    self.assertEqual(core.LR_XY, 1.7)
+                    self.assertEqual(core.LEARNING_RATES["landmark_xy"], 1.7)
+                    self.assertEqual(rates.call_count, 2)
 
     def test_one_step_analysis_uses_one_core_call_without_mutating_robots(self):
         for mode in ("Gated nearest", "Unique ID"):

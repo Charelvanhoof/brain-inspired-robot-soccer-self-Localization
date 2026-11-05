@@ -67,3 +67,17 @@ Core has no built-in profiles. The simulator owns the catalog and supplies
 Interface tests check copied input data, explicit reloads, whole-map replacement,
 invalid-input atomicity, standalone import, and initialization requirements.
 Frozen observations, expected numerical results, and learning rates are unchanged.
+
+Historical association labels (Unique ID, Unique direct, Gated nearest) remain
+only in the frozen reference and its test adapters. Current core diagnostics use
+direct or gated nearest; core has no selectable association mode. The adapters
+translate diagnostic wording without changing association decisions or numbers.
+
+## Learning-rate initialization boundary
+
+Test adapters initialize all six rates through `init_learning_rates` using the
+existing fixed regression settings. Interface tests cover copy isolation,
+explicit reload, invalid-input atomicity, initialization requirements for every
+inference mode, zero-rate behavior, and the correction controlled by each rate.
+The simulator adapter is checked for reinitialization only when rates change.
+Core has no hardcoded rate defaults or `CORE_SETTING_DEFAULTS` snapshot.

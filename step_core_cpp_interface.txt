@@ -70,6 +70,28 @@ Invalid input leaves the previous map unchanged. Returns profile and landmark_co
 Landmark/fused inference without initialization raises ValueError. Motion-only
 inference does not require a map. An explicitly empty landmarks list is allowed.
 
+Learning-rate initialization: init_learning_rates(learning_rates)
+----------------------------------------------------------------
+Call before inference. All six rates are required; core has no default rates.
+Example values (choose rates for your robot and update frequency):
+
+    core.init_learning_rates({
+        "landmark_xy": 1.6,
+        "landmark_theta": 1.700e-07,
+        "motion_velocity_xy": 4.0,
+        "motion_velocity_theta": 4.0,
+        "motion_acceleration_xy": 40.0,
+        "motion_acceleration_theta": 40.0
+    })
+
+Values must be finite, non-negative numbers. Zero is allowed and disables that correction term. Rates are not automatically
+scaled when e.g. step_dt_s changes.
+
+Core copies the six values and returns the applied rates. Changes require another
+explicit call. Invalid input leaves the previous rates unchanged. Without initialization, all inference
+modes raise ValueError. 
+
+
 Request schema
 --------------
 The request is a pybind11/JSON-friendly dictionary:
@@ -281,6 +303,8 @@ Association:
     Several matching landmarks: nearest association with the configured gate.
     Unknown name: observation rejected.
     Uniqueness depends on the complete map, not the currently visible landmarks.
+    No association mode is configured. Diagnostics report association_name as
+    direct or gated nearest.
 
 
 Response schema
@@ -305,7 +329,7 @@ step_core returns:
             "y_hat": ...,
             "landmark_terms": [...],
             "landmark_prediction_gc": {...},
-            "settings": {...}
+            "settings": {"learning_rates": {...}, ...}
         }
     }
 
@@ -314,7 +338,7 @@ skip_reason for rejected/orientation observations, and (for applied updates)
 precision, jacobian, jt_p_eps, mu_dot_contribution and free_energy_contribution.
 landmark_prediction_gc is the GC used to predict landmarks after the motion
 update. No UI reimplementation is needed to obtain those terms. settings records the
-precisions/gains/association configuration used for this call. Outputs contain
+precisions, gains and association gate used for this call. Outputs contain
 no references to the request or mutable active configuration.
 
 The C++ robot software should store:
@@ -327,8 +351,9 @@ and use it as the next request's belief_fcs_gc.
 C++ / pybind11 integration sketch
 ---------------------------------
 Initialize Python once at program startup, import the module once, and cache
-the step_core function. Supply the selected map once before stepping. Call
-init_landmarks again when changing maps. Do not initialize Python every control tick.
+the step_core function. Initialize the map and six learning rates before stepping.
+Repeat the relevant initialization call when changing them. Do not initialize
+Python every control tick.
 
 Conceptual example:
 
@@ -343,6 +368,8 @@ Conceptual example:
     landmark_profile["profile"] = "profile name";
     landmark_profile["landmarks"] = field_landmark_records;
     loc.attr("init_landmarks")(landmark_profile);
+    // Six named rates loaded from the robot configuration, as shown above.
+    loc.attr("init_learning_rates")(learning_rate_values);
     py::object step_core = loc.attr("step_core");
 
     py::dict request;
@@ -360,7 +387,7 @@ Conceptual example:
 Runtime responsibilities
 ------------------------
 C++ should:
-    - Supply the landmark list and explicit core settings at initialization.
+    - Supply the field map through init_landmarks and all six rates through init_learning_rates.
     - Own the real-time loop.
     - Read sensors.
     - Maintain previous/current frame timestamps.

@@ -221,6 +221,11 @@ core.init_landmarks({
         {"name": "goal", "type": "pose", "x_cm": -900, "y_cm": 0},
     ],
 })
+core.init_learning_rates({
+    "landmark_xy": 1.6, "landmark_theta": 1.700e-07,
+    "motion_velocity_xy": 4.0, "motion_velocity_theta": 4.0,
+    "motion_acceleration_xy": 40.0, "motion_acceleration_theta": 40.0,
+})
 response = core.step_core(request)
 ```
 
@@ -231,8 +236,14 @@ Invalid initialization leaves the previous map intact. Landmark/fused inference
 requires initialization; motion-only inference does not. An explicit empty map
 is allowed. One active map is stored per imported core module.
 
-The GUI initializes the selected map at startup and on selection changes, and
-synchronizes the existing core settings. Neither the profile nor settings are
+All six learning rates must be initialized before inference; core has no default
+rates. The values above are examples. Rates must be finite non-negative numbers;
+zero disables a correction term while motion propagation remains active. Core
+copies the supplied values; changes require another `init_learning_rates` call.
+Invalid input preserves the active rates. Map and belief remain unchanged.
+
+The GUI initializes the selected map and learning rates at startup, and applies
+changes before the next step. Neither the profile nor settings are
 added to the step_core request.
 Selecting a profile changes the map; matching follows its names. It does not reset
 learning rates or retain robot belief. The caller supplies the current belief
@@ -240,7 +251,8 @@ and receives the next belief on every call.
 
 Map-point diagnostic keys are string row indices (`"0"`, `"1"`, ...) in the
 selected profile's landmark list, not sensor identities. Observations supply
-recognition names. Settings remain the existing uppercase core variables.
+recognition names. Learning-rate presets belong to the simulator or robot caller.
+Sensor precisions and internal core settings retain their existing interfaces.
 
 `step_core` requires a timestamp string (no format requirement) and a finite
 positive time step. Belief, landmark and motion values
@@ -248,13 +260,14 @@ must be finite. It shields inputs, delegates to inference and returns detached
 JSON-friendly data. Existing diagnostics remain; `landmark_terms` additionally
 reports actual associations, whether an observation was used, skip reasons,
 precision, Jacobian, J-transpose/P/error terms, update contributions and per-point
-free energy. `diagnostics.settings` records the core settings actually used;
+free energy. `diagnostics.settings.learning_rates` records the active six rates; the rest of
+`diagnostics.settings` records current sensor precisions and internal settings.
 `diagnostics.profile` records the active map label.
 
 There is one algorithm implementation: `brain_inspired_localization_core.py`.
 It imports only standard-library modules and contains no GUI, sensor simulation,
 or map-file reads. The simulator supplies its selected profile through
-`init_landmarks`, synchronizes existing settings, and processes each frame
+`init_landmarks` and `init_learning_rates`, and processes each frame
 through `core.step_core` using `simulation_step_from_observations`.
 The map is exactly the selected profile; FOV is a separate sensor setting.
 
@@ -277,7 +290,9 @@ The last-experiment report contains:
 Reports include the active algorithm, masterdata profile, demo path, precision
 settings, distance precision modifier state, learning rates,
 noise/slip/dropout/obstruction/FOV settings,
-association mode, landmark association gate, and landmark scenario profile.
+profile recognition (Unique names or Repeated names), landmark association gate,
+and landmark scenario profile. Core determines association from each observed
+name; no association mode is configured.
 
 The optional masterdata profile comparison tooling remains in the code for
 manual use, but it is no longer exposed as a primary GUI button.

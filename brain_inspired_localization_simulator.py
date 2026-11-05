@@ -104,8 +104,6 @@ LANDMARK_ONLY_ALGORITHM_NAME = "landmark only"
 MOTION_ONLY_ALGORITHM_NAME = "motion only"
 FUSED_MOTION_LANDMARK_ALGORITHM_NAME = "motion+landmark"
 ACTIVE_ALGORITHM_NAME = FUSED_MOTION_LANDMARK_ALGORITHM_NAME
-DATA_ASSOCIATION_GATED_NEAREST_NAME = "Gated nearest"
-DATA_ASSOCIATION_UNIQUE_ID_NAME = "Unique ID"
 LANDMARK_ASSOCIATION_GATE_CM = 1000.0
 DISTANCE_PRECISION_REF_CM = 600.0
 DISTANCE_PRECISION_MIN_FACTOR = 0.15
@@ -345,12 +343,18 @@ def active_landmark_scenario_profile():
     return landmark_scenario_profile_by_name(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME)
 
 
+def landmark_profile_association_name(profile):
+    """Describe a simulator profile's recognition names for selection and reports."""
+    names = [landmark["name"] for landmark in profile["landmarks"]]
+    return "Unique names" if len(set(names)) == len(names) else "Repeated names"
+
+
 def active_association_name():
-    return core.landmark_profile_association_name(active_landmark_scenario_profile())
+    return landmark_profile_association_name(active_landmark_scenario_profile())
 
 
 def configured_association_names():
-    return list(dict.fromkeys(core.landmark_profile_association_name(profile) for profile in LANDMARK_SCENARIO_PROFILES))
+    return list(dict.fromkeys(landmark_profile_association_name(profile) for profile in LANDMARK_SCENARIO_PROFILES))
 
 
 def active_simulation_landmarks():
@@ -363,7 +367,7 @@ def select_association_profile(association_name):
     global ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
     shape = lambda profile: [(row["type"], row["x_cm"], row["y_cm"]) for row in profile["landmarks"]]
     current = active_landmark_scenario_profile()
-    candidates = [profile for profile in LANDMARK_SCENARIO_PROFILES if core.landmark_profile_association_name(profile) == association_name]
+    candidates = [profile for profile in LANDMARK_SCENARIO_PROFILES if landmark_profile_association_name(profile) == association_name]
     if not candidates:
         raise ValueError(f"No {association_name!r} landmark profile configured")
     selected = next((profile for profile in candidates if shape(profile) == shape(current)), candidates[0])
@@ -372,7 +376,7 @@ def select_association_profile(association_name):
 
 def paper_landmark_profiles():
     return sorted((profile for profile in LANDMARK_SCENARIO_PROFILES
-                   if core.landmark_profile_association_name(profile) == active_association_name()
+                   if landmark_profile_association_name(profile) == active_association_name()
                    and all(row["type"] == "pose" for row in profile["landmarks"])),
                   key=lambda profile: len(profile["landmarks"]))
 
@@ -480,7 +484,7 @@ def set_viewing_angle_deg(value: float):
     VIEWING_HALF_ANGLE_RAD = math.radians(VIEWING_ANGLE_DEG / 2.0)
 
 
-def apply_visibility_stress_paper_conditions(association_name=DATA_ASSOCIATION_UNIQUE_ID_NAME):
+def apply_visibility_stress_paper_conditions(association_name="Unique names"):
     global NOISE_ENABLED, VIEWING_ANGLE_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED
     NOISE_ENABLED = True
     VIEWING_ANGLE_ENABLED = True
@@ -529,9 +533,18 @@ def ensure_simulation_core_configuration():
     profile = active_landmark_scenario_profile()
     if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
         core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
-    for name in core.CORE_SETTING_DEFAULTS:
-        if name != "ACTIVE_DATA_ASSOCIATION_NAME":
-            setattr(core, name, globals()[name])
+    learning_rates = {
+        "landmark_xy": LR_XY, "landmark_theta": LR_ANGLE,
+        "motion_velocity_xy": MOTION_LR_VEL_XY, "motion_velocity_theta": MOTION_LR_VEL_THETA,
+        "motion_acceleration_xy": MOTION_LR_ACC_XY, "motion_acceleration_theta": MOTION_LR_ACC_THETA,
+    }
+    if core.LEARNING_RATES != learning_rates:
+        core.init_learning_rates(learning_rates)
+    # Existing sensor/internal controls remain separate from learning-rate setup.
+    for name in ("PI_CAM", "PI_ODO", "PI_IMU", "ANGLE_WEIGHT",
+                 "PRECISION_DISTANCE_MODIFIER_ENABLED", "DISTANCE_PRECISION_REF_CM",
+                 "DISTANCE_PRECISION_MIN_FACTOR", "LANDMARK_ASSOCIATION_GATE_CM"):
+        setattr(core, name, globals()[name])
 
 
 def simulation_step_from_observations(belief, observations, motion, algorithm_name, step_dt_s, timestamp=None):
@@ -3231,7 +3244,7 @@ def landmark_analysis_data(actual_fcs_gc, belief_fcs_gc, diagnostics=None, groun
         used_candidate_ids.add(lid)
         actual_landmark_id = ground_truth[obs_id]
         association_mismatch = (
-            association["association_name"] == DATA_ASSOCIATION_GATED_NEAREST_NAME
+            association["association_name"] == "gated nearest"
             and actual_landmark_id is not None
             and actual_landmark_id != lid
         )
@@ -4247,7 +4260,7 @@ def run_headless_paper_dataset_export(
         masterdata_setting_profile_by_name(profile_name, PRECISION_DISTANCE_MODIFIER_ENABLED)
     )
     if association_name is None:
-        association_name = DATA_ASSOCIATION_UNIQUE_ID_NAME if apply_paper_stress else active_association_name()
+        association_name = "Unique names" if apply_paper_stress else active_association_name()
     if apply_paper_stress:
         apply_visibility_stress_paper_conditions(association_name)
     else:
@@ -6263,7 +6276,7 @@ def main_cli(argv=None):
         "--paper-data-association",
         choices=configured_association_names(),
         default=None,
-        help="Landmark association mode for headless export. Defaults to Unique ID when --paper-data-stress is used.",
+        help="Landmark recognition names for headless export. Defaults to Unique names when --paper-data-stress is used.",
     )
     parser.add_argument(
         "--paper-data-start",
