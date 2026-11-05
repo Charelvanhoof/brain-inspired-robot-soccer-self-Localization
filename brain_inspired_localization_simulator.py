@@ -125,65 +125,77 @@ MOTION_LR_VEL_XY = 5.0
 MOTION_LR_ACC_XY = 50.0
 MOTION_LR_VEL_THETA = 5.0
 MOTION_LR_ACC_THETA = 50.0
-MASTERDATA_SETTING_PROFILES = [
+# Paper presets; source: archived brain_inspired_localisation_core.py.
+LEARNING_RATE_PROFILES = [
     {
-        "name": "40Hz",
-        "precision_distance_modifier_enabled": True,
-        "dt": 0.025,
-        "pi_cam": 1.0,
-        "pi_odo": 1.0,
-        "pi_imu": 1.0,
-        "lr_xy": 1.6,
-        "lr_angle": 1.700e-07,
-        "motion_lr_vel_xy": 4.0,
-        "motion_lr_vel_theta": 4.0,
-        "motion_lr_acc_xy": 40.0,
-        "motion_lr_acc_theta": 40.0,
+        "profile": "40Hz - DPM enabled",
+        "landmark_xy": 1.6,
+        "landmark_theta": 1.7626e-05,
+        "motion_velocity_xy": 4.0,
+        "motion_velocity_theta": 4.0,
+        "motion_acceleration_xy": 40.0,
+        "motion_acceleration_theta": 40.0,
     },
     {
-        "name": "40Hz",
-        "precision_distance_modifier_enabled": False,
-        "dt": 0.025,
-        "pi_cam": 1.0,
-        "pi_odo": 1.0,
-        "pi_imu": 1.0,
-        "lr_xy": 1.6,
-        "lr_angle": 1.700e-07,
-        "motion_lr_vel_xy": 4.0,
-        "motion_lr_vel_theta": 4.0,
-        "motion_lr_acc_xy": 40.0,
-        "motion_lr_acc_theta": 40.0,
+        "profile": "40Hz - DPM disabled",
+        "landmark_xy": 1.6,
+        "landmark_theta": 2e-06,
+        "motion_velocity_xy": 4.0,
+        "motion_velocity_theta": 4.0,
+        "motion_acceleration_xy": 40.0,
+        "motion_acceleration_theta": 40.0,
     },
     {
-        "name": "200Hz",
-        "precision_distance_modifier_enabled": True,
-        "dt": 0.005,
-        "pi_cam": 1.0,
-        "pi_odo": 1.0,
-        "pi_imu": 1.0,
-        "lr_xy": 10.0,
-        "lr_angle": 8.800e-07,
-        "motion_lr_vel_xy": 6.0,
-        "motion_lr_vel_theta": 5.0,
-        "motion_lr_acc_xy": 4.0,
-        "motion_lr_acc_theta": 3.0,
+        "profile": "200Hz - DPM enabled",
+        "landmark_xy": 10.0,
+        "landmark_theta": 8.813e-05,
+        "motion_velocity_xy": 6.0,
+        "motion_velocity_theta": 5.0,
+        "motion_acceleration_xy": 4.0,
+        "motion_acceleration_theta": 3.0,
     },
     {
-        "name": "200Hz",
-        "precision_distance_modifier_enabled": False,
-        "dt": 0.005,
-        "pi_cam": 1.0,
-        "pi_odo": 1.0,
-        "pi_imu": 1.0,
-        "lr_xy": 10.0,
-        "lr_angle": 8.800e-07,
-        "motion_lr_vel_xy": 6.0,
-        "motion_lr_vel_theta": 5.0,
-        "motion_lr_acc_xy": 4.0,
-        "motion_lr_acc_theta": 3.0,
+        "profile": "200Hz - DPM disabled",
+        "landmark_xy": 10.0,
+        "landmark_theta": 9e-06,
+        "motion_velocity_xy": 6.0,
+        "motion_velocity_theta": 5.0,
+        "motion_acceleration_xy": 4.0,
+        "motion_acceleration_theta": 3.0,
     },
+    # RobotSports tuning preserved from the previous presets.
+    {
+        "profile": "RobotSports test 40Hz DPM enabled",
+        "landmark_xy": 1.6,
+        "landmark_theta": 1.7e-07,
+        "motion_velocity_xy": 4.0,
+        "motion_velocity_theta": 4.0,
+        "motion_acceleration_xy": 40.0,
+        "motion_acceleration_theta": 40.0,
+    },
+
 ]
-MASTERDATA_FREQUENCY_NAMES = ["40Hz", "200Hz"]
+# GUI/headless execution choices select tuning through this separate table.
+LEARNING_RATE_PROFILE_SELECTIONS = [
+    {"frequency": "40Hz", "precision_distance_modifier_enabled": True,
+     "profile": "40Hz - DPM enabled"},
+    {"frequency": "40Hz", "precision_distance_modifier_enabled": False,
+     "profile": "40Hz - DPM disabled"},
+    {"frequency": "200Hz", "precision_distance_modifier_enabled": True,
+     "profile": "200Hz - DPM enabled"},
+    {"frequency": "200Hz", "precision_distance_modifier_enabled": False,
+     "profile": "200Hz - DPM disabled"},
+]
+# Landmark-specific exceptions; all other combinations use the defaults above.
+LEARNING_RATE_PROFILE_OVERRIDES = [
+    {"landmark_profile": "testRobotsports", "frequency": "40Hz",
+     "precision_distance_modifier_enabled": True,
+     "profile": "RobotSports test 40Hz DPM enabled"},
+]
+ACTIVE_LEARNING_RATE_PROFILE_NAME = "simulator"
+# Execution frequency is separate from learning-rate presets.
+SIMULATION_FREQUENCIES_HZ = {"40Hz": 40.0, "200Hz": 200.0}
+MASTERDATA_FREQUENCY_NAMES = list(SIMULATION_FREQUENCIES_HZ)
 MOTION_NOISE_RATIO = 0.10
 # NOISE SETTINGS (shared Gaussian noise magnitude)
 NOISE_STD_X_CM = 10.0
@@ -461,19 +473,20 @@ def set_motion_lr_acc_theta(value: float):
     MOTION_LR_ACC_THETA = max(0.0, float(value))
 
 
-def apply_masterdata_setting_profile(profile):
-    global PRECISION_DISTANCE_MODIFIER_ENABLED
-    PRECISION_DISTANCE_MODIFIER_ENABLED = bool(profile["precision_distance_modifier_enabled"])
-    set_dt(profile["dt"])
-    set_precision(profile["pi_cam"])
-    set_precision_odo(profile["pi_odo"])
-    set_precision_imu(profile["pi_imu"])
-    set_learning_rate_xy(profile["lr_xy"])
-    set_learning_rate_angle(profile["lr_angle"])
-    set_motion_lr_vel_xy(profile["motion_lr_vel_xy"])
-    set_motion_lr_vel_theta(profile["motion_lr_vel_theta"])
-    set_motion_lr_acc_xy(profile["motion_lr_acc_xy"])
-    set_motion_lr_acc_theta(profile["motion_lr_acc_theta"])
+def set_simulation_frequency(frequency_name):
+    """Set the global timestep from execution frequency, independently of tuning."""
+    set_dt(1.0 / SIMULATION_FREQUENCIES_HZ[frequency_name])
+
+
+def apply_learning_rate_profile(profile):
+    global ACTIVE_LEARNING_RATE_PROFILE_NAME
+    ACTIVE_LEARNING_RATE_PROFILE_NAME = profile["profile"]
+    set_learning_rate_xy(profile["landmark_xy"])
+    set_learning_rate_angle(profile["landmark_theta"])
+    set_motion_lr_vel_xy(profile["motion_velocity_xy"])
+    set_motion_lr_vel_theta(profile["motion_velocity_theta"])
+    set_motion_lr_acc_xy(profile["motion_acceleration_xy"])
+    set_motion_lr_acc_theta(profile["motion_acceleration_theta"])
 
 
 def set_viewing_angle_deg(value: float):
@@ -529,16 +542,21 @@ def motion_slip_label():
 # Builds simulated sensor observations and runs repeated simulated inference steps.
 
 # --- Shared core adapter ---
-def ensure_simulation_core_configuration():
-    profile = active_landmark_scenario_profile()
-    if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
-        core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
-    learning_rates = {
-        "profile": "simulator",
+def simulation_learning_rates():
+    """Snapshot the simulator tuning in the public core initialization format."""
+    return {
+        "profile": ACTIVE_LEARNING_RATE_PROFILE_NAME,
         "landmark_xy": LR_XY, "landmark_theta": LR_ANGLE,
         "motion_velocity_xy": MOTION_LR_VEL_XY, "motion_velocity_theta": MOTION_LR_VEL_THETA,
         "motion_acceleration_xy": MOTION_LR_ACC_XY, "motion_acceleration_theta": MOTION_LR_ACC_THETA,
     }
+
+
+def ensure_simulation_core_configuration():
+    profile = active_landmark_scenario_profile()
+    if core.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME != profile["name"]:
+        core.init_landmarks({"profile": profile["name"], "landmarks": profile["landmarks"]})
+    learning_rates = simulation_learning_rates()
     if core.LEARNING_RATES != learning_rates:
         core.init_learning_rates(learning_rates)
     # Existing sensor/internal controls remain separate from learning-rate setup.
@@ -852,12 +870,17 @@ def run_paper_lm_batch(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATIO
     global MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN
     max_steps = max(1, int(round(duration_s / saved_setup["settings"]["dt"])))
     previous_profile = ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+    previous_learning_rates = simulation_learning_rates()
+    frequency_name = next((name for name, hz in SIMULATION_FREQUENCIES_HZ.items()
+                           if math.isclose(saved_setup["settings"]["dt"], 1.0 / hz)), None)
     previous_obstructions = dict(LANDMARK_OBSTRUCTION_REMAINING_S)
     previous_slip = (MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN)
     result = {"trials": [], "last_history": [], "stopped": False, "runs_per_profile": saved_setup["runs"]}
     try:
         for profile in paper_landmark_profiles():
             ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = profile["name"]
+            if frequency_name is not None:
+                apply_learning_rate_profile(learning_rate_profile_for_frequency(frequency_name))
             profile_name = profile["name"]
             for trial_number in range(1, saved_setup["runs"] + 1):
                 experiment = reset_paper_lm_experiment(saved_setup)
@@ -865,6 +888,11 @@ def run_paper_lm_batch(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATIO
                 settings["landmark_scenario_profile"] = profile["name"]
                 settings["landmark_scenario_count"] = len(active_simulation_landmarks())
                 settings["landmark_profile"] = deepcopy(profile)
+                settings.update(learning_rate_profile=ACTIVE_LEARNING_RATE_PROFILE_NAME,
+                                learning_rate=gain_for_algorithm(saved_setup["algorithm_name"]),
+                                lr_cam_xy=LR_XY, lr_cam_angle=LR_ANGLE,
+                                lr_motion_vel_xy=MOTION_LR_VEL_XY, lr_motion_vel_theta=MOTION_LR_VEL_THETA,
+                                lr_motion_acc_xy=MOTION_LR_ACC_XY, lr_motion_acc_theta=MOTION_LR_ACC_THETA)
                 history = []
                 trial = {
                     "landmark_profile": profile_name,
@@ -916,6 +944,7 @@ def run_paper_lm_batch(saved_setup, path_step, duration_s=PAPER_LM_TRIAL_DURATIO
                 trial["completed"] = True
     finally:
         ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = previous_profile
+        apply_learning_rate_profile(previous_learning_rates)
         LANDMARK_OBSTRUCTION_REMAINING_S.clear()
         LANDMARK_OBSTRUCTION_REMAINING_S.update(previous_obstructions)
         MOTION_SLIP_REMAINING_S, MOTION_SLIP_AXIS, MOTION_SLIP_TURN_SIGN = previous_slip
@@ -1079,6 +1108,7 @@ def experiment_settings(algorithm_name):
         "data_association": active_association_name(),
         "landmark_association_gate_cm": LANDMARK_ASSOCIATION_GATE_CM,
         "landmark_scenario_profile": ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME,
+        "learning_rate_profile": ACTIVE_LEARNING_RATE_PROFILE_NAME,
         "landmark_profile": deepcopy(active_landmark_scenario_profile()),
         "landmark_scenario_count": len(active_landmark_scenario_profile()["landmarks"]),
     }
@@ -1280,12 +1310,12 @@ def precision_distance_modifier_report_row(settings):
 
 def learning_rate_report_row(settings):
     return (
-        f"LR: cam xy={format_display_value(report_value(settings, 'lr_cam_xy', 'lr_xy', LR_XY))}   "
-        f"cam a={format_display_value(report_value(settings, 'lr_cam_angle', 'lr_angle', LR_ANGLE))}   "
-        f"vel xy={format_display_value(report_value(settings, 'lr_motion_vel_xy', 'motion_lr_vel_xy', MOTION_LR_VEL_XY))}   "
-        f"vel a={format_display_value(report_value(settings, 'lr_motion_vel_theta', 'motion_lr_vel_theta', MOTION_LR_VEL_THETA))}   "
-        f"acc xy={format_display_value(report_value(settings, 'lr_motion_acc_xy', 'motion_lr_acc_xy', MOTION_LR_ACC_XY))}   "
-        f"acc a={format_display_value(report_value(settings, 'lr_motion_acc_theta', 'motion_lr_acc_theta', MOTION_LR_ACC_THETA))}"
+        f"LR: cam xy={format_display_value(report_value(settings, 'lr_cam_xy', 'lr_xy', settings.get('landmark_xy', LR_XY)))}   "
+        f"cam a={format_display_value(report_value(settings, 'lr_cam_angle', 'lr_angle', settings.get('landmark_theta', LR_ANGLE)))}   "
+        f"vel xy={format_display_value(report_value(settings, 'lr_motion_vel_xy', 'motion_lr_vel_xy', settings.get('motion_velocity_xy', MOTION_LR_VEL_XY)))}   "
+        f"vel a={format_display_value(report_value(settings, 'lr_motion_vel_theta', 'motion_lr_vel_theta', settings.get('motion_velocity_theta', MOTION_LR_VEL_THETA)))}   "
+        f"acc xy={format_display_value(report_value(settings, 'lr_motion_acc_xy', 'motion_lr_acc_xy', settings.get('motion_acceleration_xy', MOTION_LR_ACC_XY)))}   "
+        f"acc a={format_display_value(report_value(settings, 'lr_motion_acc_theta', 'motion_lr_acc_theta', settings.get('motion_acceleration_theta', MOTION_LR_ACC_THETA)))}"
     )
 
 
@@ -2468,19 +2498,18 @@ PROFILE_REGRESSION_START_POSES = [
 ]
 
 
-def masterdata_setting_profile_by_name(profile_name, precision_distance_modifier_enabled=None):
+def learning_rate_profile_for_frequency(frequency_name, precision_distance_modifier_enabled=None):
     if precision_distance_modifier_enabled is None:
         precision_distance_modifier_enabled = PRECISION_DISTANCE_MODIFIER_ENABLED
-    for profile in MASTERDATA_SETTING_PROFILES:
-        if (
-            profile["name"] == profile_name
-            and profile["precision_distance_modifier_enabled"] == bool(precision_distance_modifier_enabled)
-        ):
-            return profile
-    valid_names = ", ".join(MASTERDATA_FREQUENCY_NAMES)
+    for selection in (*LEARNING_RATE_PROFILE_OVERRIDES, *LEARNING_RATE_PROFILE_SELECTIONS):
+        if (selection.get("landmark_profile", ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME) == ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
+                and selection["frequency"] == frequency_name
+                and selection["precision_distance_modifier_enabled"] == bool(precision_distance_modifier_enabled)):
+            return next(profile for profile in LEARNING_RATE_PROFILES
+                        if profile["profile"] == selection["profile"])
     raise ValueError(
-        f"Unknown masterdata profile combination '{profile_name}', "
-        f"distance modifier={bool(precision_distance_modifier_enabled)}. Use one of: {valid_names}"
+        f"No learning-rate profile for frequency '{frequency_name}', "
+        f"distance modifier={bool(precision_distance_modifier_enabled)}"
     )
 
 
@@ -2532,19 +2561,22 @@ def run_masterdata_profile_regression_test(
     global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, MOTION_SLIP_ENABLED
     global LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, VIEWING_ANGLE_ENABLED
 
-    reference_profile = masterdata_setting_profile_by_name(reference_profile_name)
-    candidate_profile = masterdata_setting_profile_by_name(candidate_profile_name)
+    reference_profile = learning_rate_profile_for_frequency(reference_profile_name)
+    candidate_profile = learning_rate_profile_for_frequency(candidate_profile_name)
+    reference_dt = 1.0 / SIMULATION_FREQUENCIES_HZ[reference_profile_name]
+    candidate_dt = 1.0 / SIMULATION_FREQUENCIES_HZ[candidate_profile_name]
     saved_state = {
+        "profile": ACTIVE_LEARNING_RATE_PROFILE_NAME,
         "dt": DT,
         "pi_cam": PI_CAM,
         "pi_odo": PI_ODO,
         "pi_imu": PI_IMU,
-        "lr_xy": LR_XY,
-        "lr_angle": LR_ANGLE,
-        "motion_lr_vel_xy": MOTION_LR_VEL_XY,
-        "motion_lr_vel_theta": MOTION_LR_VEL_THETA,
-        "motion_lr_acc_xy": MOTION_LR_ACC_XY,
-        "motion_lr_acc_theta": MOTION_LR_ACC_THETA,
+        "landmark_xy": LR_XY,
+        "landmark_theta": LR_ANGLE,
+        "motion_velocity_xy": MOTION_LR_VEL_XY,
+        "motion_velocity_theta": MOTION_LR_VEL_THETA,
+        "motion_acceleration_xy": MOTION_LR_ACC_XY,
+        "motion_acceleration_theta": MOTION_LR_ACC_THETA,
         "precision_distance_modifier_enabled": PRECISION_DISTANCE_MODIFIER_ENABLED,
         "noise_enabled": NOISE_ENABLED,
         "odometry_bias_enabled": ODOMETRY_BIAS_ENABLED,
@@ -2554,11 +2586,12 @@ def run_masterdata_profile_regression_test(
         "viewing_angle_enabled": VIEWING_ANGLE_ENABLED,
     }
 
-    def run_profile(profile, start_case):
+    def run_profile(frequency_name, profile, start_case):
         global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, MOTION_SLIP_ENABLED
         global LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, VIEWING_ANGLE_ENABLED
 
-        apply_masterdata_setting_profile(profile)
+        set_simulation_frequency(frequency_name)
+        apply_learning_rate_profile(profile)
         NOISE_ENABLED = False
         ODOMETRY_BIAS_ENABLED = False
         MOTION_SLIP_ENABLED = False
@@ -2567,22 +2600,22 @@ def run_masterdata_profile_regression_test(
         VIEWING_ANGLE_ENABLED = False
         reset_motion_slip_state()
         reset_landmark_obstruction_state()
-        steps = max(1, int(round(duration_s / profile["dt"])))
+        steps = max(1, int(round(duration_s / DT)))
         robots = make_robots_from_start_pair(start_case["actual"], start_case["belief"])
         return run_experiment(robots, algorithm_name, max_steps=steps, until_convergence=False)
 
     results = []
     try:
         for idx, start_case in enumerate(start_cases, start=1):
-            reference_history = run_profile(reference_profile, start_case)
-            candidate_history = run_profile(candidate_profile, start_case)
+            reference_history = run_profile(reference_profile_name, reference_profile, start_case)
+            candidate_history = run_profile(candidate_profile_name, candidate_profile, start_case)
             endpoint_delta = pose_delta(reference_history[-1]["belief_pose"], candidate_history[-1]["belief_pose"])
 
             max_sample_delta = {"dx_cm": 0.0, "dy_cm": 0.0, "dtheta_rad": 0.0}
             for sample_idx in range(1, sample_count + 1):
                 sample_time_s = duration_s * sample_idx / sample_count
-                reference_pose = belief_pose_at_time(reference_history, reference_profile["dt"], sample_time_s)
-                candidate_pose = belief_pose_at_time(candidate_history, candidate_profile["dt"], sample_time_s)
+                reference_pose = belief_pose_at_time(reference_history, reference_dt, sample_time_s)
+                candidate_pose = belief_pose_at_time(candidate_history, candidate_dt, sample_time_s)
                 sample_delta = pose_delta(reference_pose, candidate_pose)
                 max_sample_delta["dx_cm"] = max(max_sample_delta["dx_cm"], abs(sample_delta["dx_cm"]))
                 max_sample_delta["dy_cm"] = max(max_sample_delta["dy_cm"], abs(sample_delta["dy_cm"]))
@@ -2604,7 +2637,8 @@ def run_masterdata_profile_regression_test(
                 result["candidate_history"] = candidate_history
             results.append(result)
     finally:
-        apply_masterdata_setting_profile(saved_state)
+        apply_learning_rate_profile(saved_state)
+        set_dt(saved_state["dt"])
         NOISE_ENABLED = saved_state["noise_enabled"]
         ODOMETRY_BIAS_ENABLED = saved_state["odometry_bias_enabled"]
         MOTION_SLIP_ENABLED = saved_state["motion_slip_enabled"]
@@ -2615,8 +2649,8 @@ def run_masterdata_profile_regression_test(
     return {
         "reference_profile": reference_profile_name,
         "candidate_profile": candidate_profile_name,
-        "reference_profile_settings": dict(reference_profile),
-        "candidate_profile_settings": dict(candidate_profile),
+        "reference_profile_settings": dict(reference_profile, dt=reference_dt, pi_cam=PI_CAM, pi_odo=PI_ODO, pi_imu=PI_IMU),
+        "candidate_profile_settings": dict(candidate_profile, dt=candidate_dt, pi_cam=PI_CAM, pi_odo=PI_ODO, pi_imu=PI_IMU),
         "duration_s": duration_s,
         "algorithm_name": algorithm_name,
         "precision_distance_modifier_enabled": PRECISION_DISTANCE_MODIFIER_ENABLED,
@@ -4257,15 +4291,16 @@ def run_headless_paper_dataset_export(
 ):
     global PRECISION_DISTANCE_MODIFIER_ENABLED
     PRECISION_DISTANCE_MODIFIER_ENABLED = bool(precision_distance_modifier_enabled)
-    apply_masterdata_setting_profile(
-        masterdata_setting_profile_by_name(profile_name, PRECISION_DISTANCE_MODIFIER_ENABLED)
-    )
+    set_simulation_frequency(profile_name)
     if association_name is None:
         association_name = "Unique names" if apply_paper_stress else active_association_name()
     if apply_paper_stress:
         apply_visibility_stress_paper_conditions(association_name)
     else:
         select_association_profile(association_name)
+    apply_learning_rate_profile(
+        learning_rate_profile_for_frequency(profile_name, PRECISION_DISTANCE_MODIFIER_ENABLED)
+    )
     selected_demo_idx = demo_path_index_by_name(demo_path_name)
     if start_mode in {"nearby", "random"}:
         actual_start, belief_start = make_converge_start_pair(start_mode)
@@ -4565,6 +4600,24 @@ def fit_button_label(text, font, max_width_px):
     return compact_text + ellipsis
 
 
+def draw_learning_rate_profile(screen, rect, profile_name, font):
+    """Display the selected tuning name, wrapping at word boundaries."""
+    pygame.draw.rect(screen, (45, 45, 45), rect, border_radius=6)
+    pygame.draw.rect(screen, (200, 200, 200), rect, width=2, border_radius=6)
+    lines = [""]
+    for word in profile_name.split():
+        candidate = (lines[-1] + " " + word).strip()
+        if lines[-1] and font.size(candidate)[0] > rect.w - 16:
+            lines.append(word)
+        else:
+            lines[-1] = candidate
+    y = rect.centery - len(lines) * font.get_linesize() // 2
+    for line in lines:
+        surface = font.render(line, True, (255, 255, 255))
+        screen.blit(surface, (rect.centerx - surface.get_width() // 2, y))
+        y += font.get_linesize()
+
+
 def draw_input_box(screen, rect, text, font, active, suffix="cm"):
     bg = (40, 70, 120) if active else (45, 45, 45)
     border = (120, 180, 255) if active else (200, 200, 200)
@@ -4736,7 +4789,6 @@ def main():
     global NOISE_ENABLED, ODOMETRY_BIAS_ENABLED, VIEWING_ANGLE_ENABLED, MOTION_SLIP_ENABLED, LANDMARK_DROPOUT_ENABLED, LANDMARK_OBSTRUCTION_ENABLED, PRECISION_DISTANCE_MODIFIER_ENABLED, ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME
     if getattr(pygame, "_is_stub", False) or getattr(plt, "_is_stub", False):
         raise ModuleNotFoundError("Interactive mode requires both pygame and matplotlib to be installed")
-    ensure_simulation_core_configuration()
     pygame.init()
     pygame.key.start_text_input()
     info = pygame.display.Info()
@@ -4788,12 +4840,14 @@ def main():
     ]
     selected_algorithm_idx = algorithm_names.index(ACTIVE_ALGORITHM_NAME)
     selected_settings_profile_idx = 0
-    apply_masterdata_setting_profile(
-        masterdata_setting_profile_by_name(
+    set_simulation_frequency(MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx])
+    apply_learning_rate_profile(
+        learning_rate_profile_for_frequency(
             MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
             PRECISION_DISTANCE_MODIFIER_ENABLED,
         )
     )
+    ensure_simulation_core_configuration()
     landmark_scenario_profile_names = [profile["name"] for profile in LANDMARK_SCENARIO_PROFILES]
     selected_landmark_scenario_profile_idx = landmark_scenario_profile_names.index(ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME)
     last_history = []
@@ -5041,12 +5095,15 @@ def main():
     precision_input_rect = pygame.Rect(settings_x, settings_fields_y + 1 * (btn_h + row_gap), settings_w, btn_h)
     precision_odo_input_rect = pygame.Rect(settings_x, settings_fields_y + 2 * (btn_h + row_gap), settings_w, btn_h)
     precision_imu_input_rect = pygame.Rect(settings_x, settings_fields_y + 3 * (btn_h + row_gap), settings_w, btn_h)
-    lr_xy_input_rect = pygame.Rect(settings_x, settings_fields_y + 4 * (btn_h + row_gap), settings_w, btn_h)
-    lr_angle_input_rect = pygame.Rect(settings_x, settings_fields_y + 5 * (btn_h + row_gap), settings_w, btn_h)
-    motion_lr_vel_xy_input_rect = pygame.Rect(settings_x, settings_fields_y + 6 * (btn_h + row_gap), settings_w, btn_h)
-    motion_lr_vel_theta_input_rect = pygame.Rect(settings_x, settings_fields_y + 7 * (btn_h + row_gap), settings_w, btn_h)
-    motion_lr_acc_xy_input_rect = pygame.Rect(settings_x, settings_fields_y + 8 * (btn_h + row_gap), settings_w, btn_h)
-    motion_lr_acc_theta_input_rect = pygame.Rect(settings_x, settings_fields_y + 9 * (btn_h + row_gap), settings_w, btn_h)
+    lr_profile_rect = pygame.Rect(settings_x, precision_imu_input_rect.bottom + row_gap,
+                                 settings_w, 2 * font_ui.get_linesize() + 12)
+    lr_fields_y = lr_profile_rect.bottom + row_gap
+    lr_xy_input_rect = pygame.Rect(settings_x, lr_fields_y, settings_w, btn_h)
+    lr_angle_input_rect = pygame.Rect(settings_x, lr_fields_y + 1 * (btn_h + row_gap), settings_w, btn_h)
+    motion_lr_vel_xy_input_rect = pygame.Rect(settings_x, lr_fields_y + 2 * (btn_h + row_gap), settings_w, btn_h)
+    motion_lr_vel_theta_input_rect = pygame.Rect(settings_x, lr_fields_y + 3 * (btn_h + row_gap), settings_w, btn_h)
+    motion_lr_acc_xy_input_rect = pygame.Rect(settings_x, lr_fields_y + 4 * (btn_h + row_gap), settings_w, btn_h)
+    motion_lr_acc_theta_input_rect = pygame.Rect(settings_x, lr_fields_y + 5 * (btn_h + row_gap), settings_w, btn_h)
 
     field_rects = {
         "landmark_noise": landmark_noise_input_rect,
@@ -5130,7 +5187,7 @@ def main():
         (
             "settings_profile",
             settings_profile_btn,
-            lambda: f"Masterdata profile: {MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]}. Click to apply next profile",
+            lambda: f"Frequency: {MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]}. Click to apply the next frequency and linked learning rates",
         ),
         (
             "landmark_scenario_profile",
@@ -5502,6 +5559,7 @@ def main():
         draw_input_box(screen, precision_input_rect, f"\u03c0 cam {input_fields['precision']['text']}", font_ui, input_fields["precision"]["active"], input_fields["precision"]["suffix"])
         draw_input_box(screen, precision_odo_input_rect, f"\u03c0 odo {input_fields['precision_odo']['text']}", font_ui, input_fields["precision_odo"]["active"], input_fields["precision_odo"]["suffix"])
         draw_input_box(screen, precision_imu_input_rect, f"\u03c0 imu {input_fields['precision_imu']['text']}", font_ui, input_fields["precision_imu"]["active"], input_fields["precision_imu"]["suffix"])
+        draw_learning_rate_profile(screen, lr_profile_rect, ACTIVE_LEARNING_RATE_PROFILE_NAME, font_ui)
         draw_input_box(screen, lr_xy_input_rect, f"LR cam xy {input_fields['lr_xy']['text']}", font_ui, input_fields["lr_xy"]["active"], input_fields["lr_xy"]["suffix"])
         draw_input_box(screen, lr_angle_input_rect, f"LR cam a {input_fields['lr_angle']['text']}", font_ui, input_fields["lr_angle"]["active"], input_fields["lr_angle"]["suffix"])
         draw_input_box(screen, motion_lr_vel_xy_input_rect, f"LR vel xy {input_fields['motion_lr_vel_xy']['text']}", font_ui, input_fields["motion_lr_vel_xy"]["active"], input_fields["motion_lr_vel_xy"]["suffix"])
@@ -5748,8 +5806,9 @@ def main():
                         selected_settings_profile_idx = (
                             selected_settings_profile_idx + 1
                         ) % len(MASTERDATA_FREQUENCY_NAMES)
-                        apply_masterdata_setting_profile(
-                            masterdata_setting_profile_by_name(
+                        set_simulation_frequency(MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx])
+                        apply_learning_rate_profile(
+                            learning_rate_profile_for_frequency(
                                 MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
                                 PRECISION_DISTANCE_MODIFIER_ENABLED,
                             )
@@ -5761,7 +5820,10 @@ def main():
                             selected_landmark_scenario_profile_idx + 1
                         ) % len(LANDMARK_SCENARIO_PROFILES)
                         ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME = LANDMARK_SCENARIO_PROFILES[selected_landmark_scenario_profile_idx]["name"]
+                        apply_learning_rate_profile(learning_rate_profile_for_frequency(
+                            MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx]))
                         ensure_simulation_core_configuration()
+                        deactivate_all_inputs(reset=True)
                         reset_landmark_obstruction_state()
                         continue
                     if analysis_btn.collidepoint(mx, my):
@@ -5866,8 +5928,8 @@ def main():
                         continue
                     if precision_distance_toggle_btn.collidepoint(mx, my):
                         PRECISION_DISTANCE_MODIFIER_ENABLED = not PRECISION_DISTANCE_MODIFIER_ENABLED
-                        apply_masterdata_setting_profile(
-                            masterdata_setting_profile_by_name(
+                        apply_learning_rate_profile(
+                            learning_rate_profile_for_frequency(
                                 MASTERDATA_FREQUENCY_NAMES[selected_settings_profile_idx],
                                 PRECISION_DISTANCE_MODIFIER_ENABLED,
                             )

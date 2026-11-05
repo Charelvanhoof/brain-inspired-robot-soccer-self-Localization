@@ -60,6 +60,17 @@ python ".\brain_inspired_localization_simulator.py"
 - Use `PROFILE` to cycle masterdata settings:
   - `40Hz`, with `dt = 0.025 s`
   - `200Hz`, with `dt = 0.005 s`
+  Frequency selection sets the global timestep separately from learning-rate
+  presets. Applying a preset does not reset PI_CAM, PI_ODO or PI_IMU.
+  `LEARNING_RATE_PROFILES` contains a profile name and six rates per entry.
+  `LEARNING_RATE_PROFILE_SELECTIONS` links frequency and distance modifier to
+  the named profile, e.g. `40Hz - DPM enabled`. There is no separate GUI profile
+  selector; the frequency and `DIST PREC` controls select the linked rates.
+  The four default profiles use the archived paper's tuning. Separate
+  `RobotSports test 40Hz DPM enabled` preserves the robot-test tuning. An entry in
+  `LEARNING_RATE_PROFILE_OVERRIDES` selects `RobotSports test 40Hz DPM enabled`
+  for `testRobotsports` at 40Hz with DPM enabled. Other combinations use the
+  default mapping. Changing the landmark profile reapplies the matching tuning.
 - Use `DIST PREC` to select the distance precision modifier (YES/NO):
   - `YES`: reduce landmark precision as the predicted landmark distance grows.
   - `NO`: apply no distance weighting to landmark precision.

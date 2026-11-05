@@ -75,7 +75,8 @@ def configured(module, scenario):
     stack.enter_context(patch(__name__ + "._REFERENCE_PROFILE_NAME", profile["name"]))
     if module is sim:
         stack.enter_context(patch.multiple(sim, **SETTINGS, **SENSORS,
-                                          ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["name"]))
+                                          ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME=profile["name"],
+                                          ACTIVE_LEARNING_RATE_PROFILE_NAME=sim.ACTIVE_LEARNING_RATE_PROFILE_NAME))
     else:
         names = CORE_STATE_NAMES
         stack.enter_context(patch.multiple(core, **deepcopy({name: getattr(core, name) for name in names})))
@@ -367,6 +368,125 @@ class LandmarkMapTests(unittest.TestCase):
                 curves = sim.paper_lm_mean_errors(result["csv_path"], metadata)
                 self.assertEqual(len(curves), 3)
                 self.assertTrue(all(len(curve["time_s"]) == 3 for curve in curves.values()))
+
+
+class LearningRatePresetTests(unittest.TestCase):
+    def test_presets_leave_global_timestep_and_precisions_unchanged(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            sim.DT = 0.017
+            sim.PI_CAM, sim.PI_ODO, sim.PI_IMU = 2.0, 3.0, 4.0
+            for profile in sim.LEARNING_RATE_PROFILES:
+                with self.subTest(profile=profile):
+                    self.assertEqual(set(profile), {"profile", *LEARNING_RATE_SETTINGS})
+                    sim.apply_learning_rate_profile(profile)
+                    self.assertEqual(sim.DT, 0.017)
+                    self.assertEqual((sim.PI_CAM, sim.PI_ODO, sim.PI_IMU), (2.0, 3.0, 4.0))
+
+    def test_frequency_and_distance_modifier_select_named_learning_rates(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            self.assertEqual(len({profile["profile"] for profile in sim.LEARNING_RATE_PROFILES}), 5)
+            for frequency in ("40Hz", "200Hz"):
+                for enabled in (True, False):
+                    expected = f"{frequency} - DPM {'enabled' if enabled else 'disabled'}"
+                    with self.subTest(frequency=frequency, enabled=enabled), \
+                         patch.object(sim, "PRECISION_DISTANCE_MODIFIER_ENABLED", enabled):
+                        sim.set_simulation_frequency(frequency)
+                        profile = sim.learning_rate_profile_for_frequency(frequency)
+                        self.assertEqual(profile["profile"], expected)
+                        sim.apply_learning_rate_profile(profile)
+                        sim.ensure_simulation_core_configuration()
+                        self.assertEqual(core.LEARNING_RATES, profile)
+                        self.assertEqual(sim.experiment_settings("motion+landmark")["learning_rate_profile"], expected)
+                        self.assertEqual(sim.PRECISION_DISTANCE_MODIFIER_ENABLED, enabled)
+
+    def test_paper_rates_are_restored_and_robotsports_tuning_is_preserved(self):
+        profiles = {profile["profile"]: profile for profile in sim.LEARNING_RATE_PROFILES}
+        for frequency, enabled, paper_angle in (
+                ("40Hz", True, 2.20325e-05 * 0.8),
+                ("40Hz", False, 2.000e-06),
+                ("200Hz", True, 8.813e-05),
+                ("200Hz", False, 9.000e-06)):
+            name = f"{frequency} - DPM {'enabled' if enabled else 'disabled'}"
+            with self.subTest(profile=name):
+                paper = profiles[name]
+                self.assertEqual(paper["landmark_theta"], paper_angle)
+                other_rates = {"landmark_xy": 1.6, "motion_velocity_xy": 4.0,
+                               "motion_velocity_theta": 4.0, "motion_acceleration_xy": 40.0,
+                               "motion_acceleration_theta": 40.0} if frequency == "40Hz" else {
+                               "landmark_xy": 10.0, "motion_velocity_xy": 6.0,
+                               "motion_velocity_theta": 5.0, "motion_acceleration_xy": 4.0,
+                               "motion_acceleration_theta": 3.0}
+                for key, value in other_rates.items():
+                    self.assertEqual(paper[key], value)
+
+        robot = profiles["RobotSports test 40Hz DPM enabled"]
+        self.assertEqual(robot, {
+            "profile": "RobotSports test 40Hz DPM enabled", "landmark_xy": 1.6,
+            "landmark_theta": 1.700e-07, "motion_velocity_xy": 4.0,
+            "motion_velocity_theta": 4.0, "motion_acceleration_xy": 40.0,
+            "motion_acceleration_theta": 40.0,
+        })
+
+    def test_robotsports_override_applies_only_to_40hz_with_dpm_enabled(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            for frequency in ("40Hz", "200Hz"):
+                for enabled in (True, False):
+                    with self.subTest(frequency=frequency, enabled=enabled), \
+                         patch.object(sim, "ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME", "testRobotsports"):
+                        profile = sim.learning_rate_profile_for_frequency(frequency, enabled)
+                        default_name = f"{frequency} - DPM {'enabled' if enabled else 'disabled'}"
+                        expected = "RobotSports test 40Hz DPM enabled" if frequency == "40Hz" and enabled else default_name
+                        self.assertEqual(profile["profile"], expected)
+            self.assertEqual(sim.learning_rate_profile_for_frequency("40Hz", True)["profile"], "40Hz - DPM enabled")
+
+    def test_landmark_batch_uses_linked_tuning_and_restores_previous_rates(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            sim.ensure_simulation_core_configuration()
+            original = sim.simulation_learning_rates()
+            profiles = [sim.landmark_scenario_profile_by_name(name) for name in ("9 ambiguous", "testRobotsports")]
+            setup = dict(robots={"actual": sim.make_robot_gc_state(200, -100, 0.25),
+                                 "belief": sim.make_robot_gc_state(220, -115, 0.3)},
+                         settings=sim.experiment_settings("motion+landmark"), runs=1,
+                         algorithm_name="motion+landmark", demo_state={})
+            recorded = {}
+
+            def record(profile_name, trial, frame):
+                recorded[profile_name] = deepcopy(frame["settings"])
+
+            with patch.object(sim, "LANDMARK_SCENARIO_PROFILES", profiles):
+                sim.run_paper_lm_batch(setup, lambda experiment: None, duration_s=0.025, record_callback=record)
+            self.assertEqual(recorded["testRobotsports"]["learning_rate_profile"], "RobotSports test 40Hz DPM enabled")
+            self.assertEqual(recorded["testRobotsports"]["lr_cam_angle"], 1.700e-07)
+            self.assertEqual(recorded["9 ambiguous"]["lr_cam_angle"], 2.20325e-05 * 0.8)
+            self.assertEqual(sim.simulation_learning_rates(), original)
+            self.assertEqual(sim.ACTIVE_LANDMARK_SCENARIO_PROFILE_NAME, "9 ambiguous")
+
+    def test_execution_frequency_sets_timestep_independently_of_tuning(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            rates = {name: getattr(sim, name) for name in LEARNING_RATE_SETTINGS.values()}
+            sim.PI_CAM, sim.PI_ODO, sim.PI_IMU = 2.0, 3.0, 4.0
+            for frequency, dt in (("40Hz", 0.025), ("200Hz", 0.005)):
+                with self.subTest(frequency=frequency):
+                    sim.set_simulation_frequency(frequency)
+                    self.assertEqual(sim.DT, dt)
+                    self.assertEqual({name: getattr(sim, name) for name in rates}, rates)
+                    self.assertEqual((sim.PI_CAM, sim.PI_ODO, sim.PI_IMU), (2.0, 3.0, 4.0))
+
+    def test_frequency_comparison_uses_execution_timing_and_restores_globals(self):
+        with configured(sim, dict(association="Gated nearest", profile="9")):
+            sim.DT = 0.017
+            sim.PI_CAM, sim.PI_ODO, sim.PI_IMU = 2.0, 3.0, 4.0
+            report = sim.run_masterdata_profile_regression_test(
+                duration_s=0.05, start_cases=sim.PROFILE_REGRESSION_START_POSES[:1], sample_count=2)
+            self.assertEqual(report["results"][0]["reference_steps"], 10)
+            self.assertEqual(report["results"][0]["candidate_steps"], 2)
+            self.assertEqual(report["reference_profile_settings"]["dt"], 0.005)
+            self.assertEqual(report["candidate_profile_settings"]["dt"], 0.025)
+            self.assertEqual(report["reference_profile_settings"]["pi_cam"], 2.0)
+            self.assertIn("cam xy=10 ", sim.learning_rate_report_row(report["reference_profile_settings"]))
+            self.assertIn("cam xy=1.6 ", sim.learning_rate_report_row(report["candidate_profile_settings"]))
+            self.assertEqual(sim.DT, 0.017)
+            self.assertEqual((sim.PI_CAM, sim.PI_ODO, sim.PI_IMU), (2.0, 3.0, 4.0))
 
 
 class LocalizationRegressionTests(unittest.TestCase):
